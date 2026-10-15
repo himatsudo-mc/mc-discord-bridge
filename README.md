@@ -1,6 +1,6 @@
 # mc-discord-bridge
 
-Minecraft (Java Edition, Paper/Purpur v1.21.11) と Discord 間で、チャットの双方向同期
+Minecraft (Java Edition, Paper/Purpur 26.3) と Discord 間で、チャットの双方向同期
 とサーバーの起動・停止通知を行う連携システムです。
 
 - `minecraft-plugin/` — Paper/Purpur 用プラグイン（Java）
