@@ -13,6 +13,9 @@ from .config import Config, LinkSettings
 
 logger = logging.getLogger("bridge.discord_bot")
 
+# Embed descriptions are capped at 4096 characters by Discord.
+_EMBED_DESCRIPTION_LIMIT = 4096
+
 
 class DiscordBridgeBot(commands.Bot):
     def __init__(self, config: Config) -> None:
@@ -69,22 +72,14 @@ class DiscordBridgeBot(commands.Bot):
         result = await self.bridge_server.request_players(server_id)
         if result is None:
             await interaction.followup.send(
-                "\N{WARNING SIGN} Minecraftサーバーに接続できないため、参加者を取得できませんでした。"
+                "\N{WARNING SIGN} Minecraftサーバーに接続できない、または応答がないため、参加者を取得できませんでした。"
             )
             return
         players, max_players = result
         count = f"{len(players)}/{max_players}" if max_players is not None else str(len(players))
-        if players:
-            safe = [
-                discord.utils.escape_markdown(discord.utils.escape_mentions(n))
-                for n in sorted(players, key=str.lower)
-            ]
-            description = "\n".join(f"\N{BULLET} {n}" for n in safe)
-        else:
-            description = "現在オンラインのプレイヤーはいません。"
         embed = discord.Embed(
             title=f"\N{BUSTS IN SILHOUETTE} 参加者一覧 ({count})",
-            description=description,
+            description=format_player_list(players),
             color=discord.Color.blurple(),
         )
         await interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
@@ -142,3 +137,29 @@ class DiscordBridgeBot(commands.Bot):
         if channel is None:
             logger.warning("Configured Discord channel %s was not found.", channel_id)
         return channel
+
+
+def format_player_list(players: list[str]) -> str:
+    """Formats player names as a bulleted list that fits in an embed description.
+
+    Names past the length limit are collapsed into a trailing "他 N 人" line.
+    """
+    if not players:
+        return "現在オンラインのプレイヤーはいません。"
+    lines = [
+        f"\N{BULLET} {discord.utils.escape_markdown(discord.utils.escape_mentions(name))}"
+        for name in sorted(players, key=str.lower)
+    ]
+    # Leave room for the "...and N more" line in case truncation is needed.
+    budget = _EMBED_DESCRIPTION_LIMIT - 32
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        cost = len(line) + (1 if kept else 0)
+        if used + cost > budget:
+            break
+        kept.append(line)
+        used += cost
+    if len(kept) < len(lines):
+        kept.append(f"…他 {len(lines) - len(kept)} 人")
+    return "\n".join(kept)

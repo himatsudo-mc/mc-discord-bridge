@@ -63,8 +63,9 @@ class BridgeServer:
             lambda: deque(maxlen=self._config.bridge.max_queue_size)
         )
         self._locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
-        # In-flight players_request calls, keyed by request_id.
-        self._pending_players: Dict[str, asyncio.Future] = {}
+        # In-flight players_request calls, keyed by (server_id, request_id) so
+        # only the server that was asked can answer.
+        self._pending_players: Dict[Tuple[str, str], asyncio.Future] = {}
 
     async def start(self) -> None:
         self._runner = web.AppRunner(self._app)
@@ -120,7 +121,8 @@ class BridgeServer:
             return None
         request_id = uuid.uuid4().hex
         future: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending_players[request_id] = future
+        key = (server_id, request_id)
+        self._pending_players[key] = future
         try:
             await ws.send_str(json.dumps({"type": protocol.TYPE_PLAYERS_REQUEST, "request_id": request_id}))
             return await asyncio.wait_for(future, timeout=timeout)
@@ -131,7 +133,7 @@ class BridgeServer:
             logger.exception("Failed to request player list from %r.", server_id)
             return None
         finally:
-            self._pending_players.pop(request_id, None)
+            self._pending_players.pop(key, None)
 
     async def _flush_queue_locked(self, server_id: str, ws: web.WebSocketResponse) -> None:
         """Flushes server_id's queue to ws. Must be called while holding self._locks[server_id]."""
@@ -255,7 +257,7 @@ class BridgeServer:
             elif msg_type == protocol.TYPE_PLAYER_LEAVE:
                 await self._on_player_leave(server_id, str(data.get("player", "?")))
             elif msg_type == protocol.TYPE_PLAYERS_RESPONSE:
-                future = self._pending_players.get(str(data.get("request_id", "")))
+                future = self._pending_players.get((server_id, str(data.get("request_id", ""))))
                 if future is not None and not future.done():
                     raw_players = str(data.get("players", ""))
                     players = [name for name in raw_players.split(",") if name]
