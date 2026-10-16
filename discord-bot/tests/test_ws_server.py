@@ -226,3 +226,43 @@ async def test_on_chat_exception_does_not_kill_the_connection(bridge):
     assert not ws.closed
 
     await ws.close()
+
+
+async def test_request_players_round_trip(bridge):
+    server, client, _recorder = bridge
+    ws = await _connect(client, "survival", "s1")
+
+    task = asyncio.ensure_future(server.request_players("survival", timeout=2))
+    req = await ws.receive_json()
+    assert req["type"] == "players_request"
+    await ws.send_str(
+        json.dumps({"type": "players_response", "request_id": req["request_id"], "players": "Steve,Alex", "max": "20"})
+    )
+    assert await task == (["Steve", "Alex"], 20)
+    assert not server._pending_players
+    await ws.close()
+
+
+async def test_request_players_not_connected_or_timeout(bridge):
+    server, client, _recorder = bridge
+    assert await server.request_players("survival", timeout=0.1) is None
+    ws = await _connect(client, "survival", "s1")
+    assert await server.request_players("survival", timeout=0.1) is None
+    assert not server._pending_players
+    await ws.close()
+
+
+async def test_players_response_from_other_server_is_ignored(bridge):
+    server, client, _recorder = bridge
+    ws_a = await _connect(client, "survival", "s1")
+    ws_b = await _connect(client, "creative", "s2")
+
+    task = asyncio.ensure_future(server.request_players("survival", timeout=0.5))
+    req = await ws_a.receive_json()
+    # A different server echoing the request_id must not resolve survival's request.
+    await ws_b.send_str(
+        json.dumps({"type": "players_response", "request_id": req["request_id"], "players": "Mallory", "max": "1"})
+    )
+    assert await task is None
+    await ws_a.close()
+    await ws_b.close()

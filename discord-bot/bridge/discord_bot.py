@@ -6,11 +6,15 @@ import logging
 from typing import Dict, Optional
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 from .config import Config, LinkSettings
 
 logger = logging.getLogger("bridge.discord_bot")
+
+# Embed descriptions are capped at 4096 characters by Discord.
+_EMBED_DESCRIPTION_LIMIT = 4096
 
 
 class DiscordBridgeBot(commands.Bot):
@@ -23,6 +27,13 @@ class DiscordBridgeBot(commands.Bot):
         self._channel_to_server: Dict[int, str] = {link.chat_channel_id: link.server_id for link in config.links}
         # Wired up by main.py once the BridgeServer exists.
         self.bridge_server = None
+        self.tree.add_command(
+            app_commands.Command(
+                name="players",
+                description="Minecraftサーバーの参加者一覧を表示します",
+                callback=self._players_slash,
+            )
+        )
 
     async def on_ready(self) -> None:
         logger.info("Logged in to Discord as %s", self.user)
@@ -46,6 +57,32 @@ class DiscordBridgeBot(commands.Bot):
 
         if self.bridge_server is not None:
             await self.bridge_server.broadcast_to_minecraft(server_id, message.author.display_name, content)
+
+    async def setup_hook(self) -> None:
+        await self.tree.sync()
+
+    async def _players_slash(self, interaction: discord.Interaction) -> None:
+        server_id = self._channel_to_server.get(interaction.channel_id)
+        if server_id is None or self.bridge_server is None:
+            await interaction.response.send_message(
+                "このチャンネルはMinecraftサーバーと連携されていません。", ephemeral=True
+            )
+            return
+        await interaction.response.defer()
+        result = await self.bridge_server.request_players(server_id)
+        if result is None:
+            await interaction.followup.send(
+                "\N{WARNING SIGN} Minecraftサーバーに接続できない、または応答がないため、参加者を取得できませんでした。"
+            )
+            return
+        players, max_players = result
+        count = f"{len(players)}/{max_players}" if max_players is not None else str(len(players))
+        embed = discord.Embed(
+            title=f"\N{BUSTS IN SILHOUETTE} 参加者一覧 ({count})",
+            description=format_player_list(players),
+            color=discord.Color.blurple(),
+        )
+        await interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def relay_minecraft_chat(self, server_id: str, player: str, message_text: str) -> None:
         channel = self._channel_for(server_id, notify=False)
@@ -100,3 +137,29 @@ class DiscordBridgeBot(commands.Bot):
         if channel is None:
             logger.warning("Configured Discord channel %s was not found.", channel_id)
         return channel
+
+
+def format_player_list(players: list[str]) -> str:
+    """Formats player names as a bulleted list that fits in an embed description.
+
+    Names past the length limit are collapsed into a trailing "他 N 人" line.
+    """
+    if not players:
+        return "現在オンラインのプレイヤーはいません。"
+    lines = [
+        f"\N{BULLET} {discord.utils.escape_markdown(discord.utils.escape_mentions(name))}"
+        for name in sorted(players, key=str.lower)
+    ]
+    # Leave room for the "...and N more" line in case truncation is needed.
+    budget = _EMBED_DESCRIPTION_LIMIT - 32
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        cost = len(line) + (1 if kept else 0)
+        if used + cost > budget:
+            break
+        kept.append(line)
+        used += cost
+    if len(kept) < len(lines):
+        kept.append(f"…他 {len(lines) - len(kept)} 人")
+    return "\n".join(kept)

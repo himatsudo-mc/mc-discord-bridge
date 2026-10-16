@@ -112,6 +112,29 @@ public final class BridgeManager {
         Bukkit.getScheduler().runTask(plugin, () -> Bukkit.broadcast(component));
     }
 
+    /**
+     * Answers a players_request from the Discord bot. Bukkit's player list
+     * must be read on the main thread, so hop there first. The reply is sent
+     * directly rather than queued: a stale player list is worse than none.
+     */
+    void onPlayersRequest(String requestId) {
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            String names = Bukkit.getOnlinePlayers().stream()
+                    .map(org.bukkit.entity.Player::getName)
+                    .collect(java.util.stream.Collectors.joining(","));
+            String max = String.valueOf(Bukkit.getMaxPlayers());
+            BridgeWebSocketClient current = client.get();
+            if (current != null && current.isOpen() && current.isAuthenticated()) {
+                try {
+                    current.send(Json.object("type", "players_response", "request_id", requestId,
+                            "players", names, "max", max));
+                } catch (Exception e) {
+                    logger.warning("[MCDiscordBridge] Failed to send players_response: " + e.getMessage());
+                }
+            }
+        });
+    }
+
     /** Forwards an in-game chat message to Discord. Fire-and-forget. */
     public void sendChat(String player, String message) {
         sendBestEffort(Json.object("type", "chat", "player", player, "message", message));
