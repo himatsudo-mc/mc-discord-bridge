@@ -101,7 +101,7 @@ Example:
 | `auth_ok`   | –                 | Authentication succeeded.                    |
 | `auth_fail` | –                 | Authentication failed; connection is closed. |
 | `chat`      | `user`, `message` | A message was posted in the bridged Discord channel. |
-| `players_request` | `request_id` | Asks the plugin for its online player list (sent when someone runs `!players`). The plugin answers with `players_response` carrying the same `request_id`. |
+| `players_request` | `request_id` | Asks the plugin for its online player list (sent when someone runs `/players`). The plugin answers with `players_response` carrying the same `request_id`. |
 
 Example:
 
