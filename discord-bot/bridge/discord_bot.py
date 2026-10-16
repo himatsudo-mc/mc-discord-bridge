@@ -23,6 +23,8 @@ class DiscordBridgeBot(commands.Bot):
         self._channel_to_server: Dict[int, str] = {link.chat_channel_id: link.server_id for link in config.links}
         # Wired up by main.py once the BridgeServer exists.
         self.bridge_server = None
+        self.add_command(commands.Command(self._make_players_callback(), name="players", aliases=["list", "online"],
+                                          help="Minecraftサーバーの参加者一覧を表示します"))
 
     async def on_ready(self) -> None:
         logger.info("Logged in to Discord as %s", self.user)
@@ -46,6 +48,31 @@ class DiscordBridgeBot(commands.Bot):
 
         if self.bridge_server is not None:
             await self.bridge_server.broadcast_to_minecraft(server_id, message.author.display_name, content)
+
+    def _make_players_callback(self):
+        async def players(ctx: commands.Context) -> None:
+            await self._players_command(ctx)
+
+        return players
+
+    async def _players_command(self, ctx: commands.Context) -> None:
+        server_id = self._channel_to_server.get(ctx.channel.id)
+        if server_id is None or self.bridge_server is None:
+            return
+        result = await self.bridge_server.request_players(server_id)
+        if result is None:
+            await ctx.send("\N{WARNING SIGN} Minecraftサーバーに接続できないため、参加者を取得できませんでした。")
+            return
+        players, max_players = result
+        count = f"{len(players)}/{max_players}" if max_players is not None else str(len(players))
+        if players:
+            safe = [discord.utils.escape_markdown(discord.utils.escape_mentions(n)) for n in sorted(players, key=str.lower)]
+            description = "\n".join(f"\N{BULLET} {n}" for n in safe)
+        else:
+            description = "現在オンラインのプレイヤーはいません。"
+        embed = discord.Embed(title=f"\N{BUSTS IN SILHOUETTE} 参加者一覧 ({count})",
+                              description=description, color=discord.Color.blurple())
+        await ctx.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def relay_minecraft_chat(self, server_id: str, player: str, message_text: str) -> None:
         channel = self._channel_for(server_id, notify=False)

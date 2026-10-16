@@ -226,3 +226,27 @@ async def test_on_chat_exception_does_not_kill_the_connection(bridge):
     assert not ws.closed
 
     await ws.close()
+
+
+async def test_request_players_round_trip(bridge):
+    server, client, _recorder = bridge
+    ws = await _connect(client, "survival", "s1")
+
+    task = asyncio.ensure_future(server.request_players("survival", timeout=2))
+    req = await ws.receive_json()
+    assert req["type"] == "players_request"
+    await ws.send_str(
+        json.dumps({"type": "players_response", "request_id": req["request_id"], "players": "Steve,Alex", "max": "20"})
+    )
+    assert await task == (["Steve", "Alex"], 20)
+    assert not server._pending_players
+    await ws.close()
+
+
+async def test_request_players_not_connected_or_timeout(bridge):
+    server, client, _recorder = bridge
+    assert await server.request_players("survival", timeout=0.1) is None
+    ws = await _connect(client, "survival", "s1")
+    assert await server.request_players("survival", timeout=0.1) is None
+    assert not server._pending_players
+    await ws.close()

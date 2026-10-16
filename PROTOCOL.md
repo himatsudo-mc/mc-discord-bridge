@@ -86,6 +86,8 @@ side; see "Multi-Server" if the bot has more than one `links[]` entry).
 | `player_join`  | `player`                         | A player joined the server.                |
 | `player_leave` | `player`                         | A player left the server.                  |
 
+| `players_response` | `request_id`, `players`, `max` | Reply to `players_request`. `players` is a comma-separated list of online player names (empty if none); `max` is the max player slots. |
+
 Example:
 
 ```json
@@ -99,6 +101,7 @@ Example:
 | `auth_ok`   | –                 | Authentication succeeded.                    |
 | `auth_fail` | –                 | Authentication failed; connection is closed. |
 | `chat`      | `user`, `message` | A message was posted in the bridged Discord channel. |
+| `players_request` | `request_id` | Asks the plugin for its online player list (sent when someone runs `!players`). The plugin answers with `players_response` carrying the same `request_id`. |
 
 Example:
 
@@ -126,6 +129,10 @@ responsible for applying its own display formatting from its local config:
 only), e.g. `"\U0001F7E2 **{player}** が参加しました"`. Player names go
 through the same escaping and are sent to `discord.notify_channel_id` with
 `allowed_mentions=AllowedMentions.none()`.
+
+`players_request` is request/response and is never queued: if the plugin is
+offline or does not answer within 5 seconds, the bot tells the Discord user
+the list is unavailable instead of showing stale data.
 
 ## Loop Prevention
 

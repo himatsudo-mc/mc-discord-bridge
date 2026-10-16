@@ -21,8 +21,9 @@ import asyncio
 import json
 import logging
 import time
+import uuid
 from collections import defaultdict, deque
-from typing import Awaitable, Callable, Deque, Dict, Optional, Tuple
+from typing import Awaitable, Callable, Deque, Dict, List, Optional, Tuple
 
 from aiohttp import web
 
@@ -62,6 +63,8 @@ class BridgeServer:
             lambda: deque(maxlen=self._config.bridge.max_queue_size)
         )
         self._locks: Dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        # In-flight players_request calls, keyed by request_id.
+        self._pending_players: Dict[str, asyncio.Future] = {}
 
     async def start(self) -> None:
         self._runner = web.AppRunner(self._app)
@@ -102,6 +105,33 @@ class BridgeServer:
                 server_id,
                 len(queue),
             )
+
+    async def request_players(
+        self, server_id: str, timeout: float = 5.0
+    ) -> Optional[Tuple[List[str], Optional[int]]]:
+        """Asks the Minecraft server for its online players.
+
+        Returns (player names, max players or None), or None if the server is
+        not connected or doesn't answer within ``timeout`` seconds. Unlike
+        chat, this is never queued: a stale answer would be misleading.
+        """
+        ws = self._connections.get(server_id)
+        if ws is None or ws.closed:
+            return None
+        request_id = uuid.uuid4().hex
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._pending_players[request_id] = future
+        try:
+            await ws.send_str(json.dumps({"type": protocol.TYPE_PLAYERS_REQUEST, "request_id": request_id}))
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("Minecraft server %r did not answer players_request in time.", server_id)
+            return None
+        except Exception:
+            logger.exception("Failed to request player list from %r.", server_id)
+            return None
+        finally:
+            self._pending_players.pop(request_id, None)
 
     async def _flush_queue_locked(self, server_id: str, ws: web.WebSocketResponse) -> None:
         """Flushes server_id's queue to ws. Must be called while holding self._locks[server_id]."""
@@ -224,6 +254,16 @@ class BridgeServer:
                 await self._on_player_join(server_id, str(data.get("player", "?")))
             elif msg_type == protocol.TYPE_PLAYER_LEAVE:
                 await self._on_player_leave(server_id, str(data.get("player", "?")))
+            elif msg_type == protocol.TYPE_PLAYERS_RESPONSE:
+                future = self._pending_players.get(str(data.get("request_id", "")))
+                if future is not None and not future.done():
+                    raw_players = str(data.get("players", ""))
+                    players = [name for name in raw_players.split(",") if name]
+                    try:
+                        max_players: Optional[int] = int(data["max"])
+                    except (KeyError, TypeError, ValueError):
+                        max_players = None
+                    future.set_result((players, max_players))
             else:
                 logger.debug("Ignoring unknown bridge message type from %r: %s", server_id, msg_type)
         except Exception:

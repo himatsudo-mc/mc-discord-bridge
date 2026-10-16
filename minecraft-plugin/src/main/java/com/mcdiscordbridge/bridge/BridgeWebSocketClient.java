@@ -57,6 +57,11 @@ final class BridgeWebSocketClient extends WebSocketClient {
                     manager.onDiscordChat(fields.getOrDefault("user", "Discord"), fields.getOrDefault("message", ""));
                 }
             }
+            case "players_request" -> {
+                if (authenticated) {
+                    manager.onPlayersRequest(fields.getOrDefault("request_id", ""));
+                }
+            }
             default -> {
                 // Unknown/ignored message type.
             }
