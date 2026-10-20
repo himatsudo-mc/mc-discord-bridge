@@ -189,7 +189,7 @@ class DiscordBridgeBot(commands.Bot):
         await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     async def relay_minecraft_chat(self, server_id: str, player: str, message_text: str) -> None:
-        channel = self._channel_for(server_id, notify=False)
+        channel = await self._channel_for(server_id, notify=False)
         if channel is None:
             return
         safe_player = discord.utils.escape_markdown(discord.utils.escape_mentions(player))
@@ -210,7 +210,7 @@ class DiscordBridgeBot(commands.Bot):
         await self._send_presence_notice(server_id, player, self._config.format.player_leave)
 
     async def _send_presence_notice(self, server_id: str, player: str, template: str) -> None:
-        channel = self._channel_for(server_id, notify=True)
+        channel = await self._channel_for(server_id, notify=True)
         if channel is None:
             return
         safe_player = discord.utils.escape_markdown(discord.utils.escape_mentions(player))
@@ -218,7 +218,7 @@ class DiscordBridgeBot(commands.Bot):
         await channel.send(text, allowed_mentions=discord.AllowedMentions.none())
 
     async def _send_status_embed(self, server_id: str, server_name: str, started: bool) -> None:
-        channel = self._channel_for(server_id, notify=True)
+        channel = await self._channel_for(server_id, notify=True)
         if channel is None:
             return
         embed = discord.Embed(
@@ -228,19 +228,33 @@ class DiscordBridgeBot(commands.Bot):
         )
         await channel.send(embed=embed)
 
-    def _channel_for(self, server_id: str, notify: bool) -> Optional[discord.abc.Messageable]:
+    async def _channel_for(self, server_id: str, notify: bool) -> Optional[discord.abc.Messageable]:
         """Resolves a server_id to its chat (or notify) channel, or None if unroutable."""
         link = self._links_by_id.get(server_id)
         if link is None:
             logger.warning("Received a message from unknown server_id %r; dropping.", server_id)
             return None
-        return self._get_text_channel(link.notify_channel_id if notify else link.chat_channel_id)
+        return await self._get_text_channel(link.notify_channel_id if notify else link.chat_channel_id)
 
-    def _get_text_channel(self, channel_id: int) -> Optional[discord.abc.Messageable]:
+    async def _get_text_channel(self, channel_id: int) -> Optional[discord.abc.Messageable]:
         channel = self.get_channel(channel_id)
-        if channel is None:
-            logger.warning("Configured Discord channel %s was not found.", channel_id)
-        return channel
+        if channel is not None:
+            return channel
+        # The cache can miss (e.g. right after startup); fall back to the REST API
+        # and report why it failed so a misconfiguration is easy to diagnose.
+        try:
+            return await self.fetch_channel(channel_id)
+        except discord.NotFound:
+            logger.warning(
+                "Configured Discord channel %s does not exist (or the bot is not in its server). "
+                "Check the channel ID in config.yml.", channel_id)
+        except discord.Forbidden:
+            logger.warning(
+                "Configured Discord channel %s exists but the bot cannot access it. "
+                "Grant the bot View Channel / Send Messages permission.", channel_id)
+        except discord.HTTPException:
+            logger.exception("Failed to fetch Discord channel %s.", channel_id)
+        return None
 
 
 def format_player_list(players: list[str]) -> str:
