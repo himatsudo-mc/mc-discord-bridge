@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from .config import Config, LinkSettings
+from .links import MCID_PATTERN, LinkStore
 
 logger = logging.getLogger("bridge.discord_bot")
 
@@ -27,6 +28,10 @@ class DiscordBridgeBot(commands.Bot):
         self._channel_to_server: Dict[int, str] = {link.chat_channel_id: link.server_id for link in config.links}
         # Wired up by main.py once the BridgeServer exists.
         self.bridge_server = None
+        # Likewise wired up by main.py (dynamic voice channels created via the HTTP API).
+        self.vc_manager = None
+        # MCID <-> Discord links registered by staff with /link (wired up by main.py).
+        self.link_store: Optional[LinkStore] = None
         self.tree.add_command(
             app_commands.Command(
                 name="players",
@@ -34,6 +39,7 @@ class DiscordBridgeBot(commands.Bot):
                 callback=self._players_slash,
             )
         )
+        self._add_link_commands()
 
     async def on_ready(self) -> None:
         logger.info("Logged in to Discord as %s", self.user)
@@ -60,6 +66,14 @@ class DiscordBridgeBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.tree.sync()
+        if self.vc_manager is not None:
+            self.vc_manager.start()
+
+    async def on_voice_state_update(
+        self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+    ) -> None:
+        if self.vc_manager is not None:
+            await self.vc_manager.on_voice_state_update(member, before, after)
 
     async def _players_slash(self, interaction: discord.Interaction) -> None:
         server_id = self._channel_to_server.get(interaction.channel_id)
@@ -83,6 +97,96 @@ class DiscordBridgeBot(commands.Bot):
             color=discord.Color.blurple(),
         )
         await interaction.followup.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
+
+    def _add_link_commands(self) -> None:
+        """Staff-only /link and /unlink (needs Manage Roles; server admins can change who may use them)."""
+
+        @app_commands.describe(user="紐づけるDiscordユーザー", mcid="そのプレイヤーのMCID（統合版は「.」などの接頭辞込み）")
+        async def link(interaction: discord.Interaction, user: discord.Member, mcid: str) -> None:
+            await self._link_slash(interaction, user, mcid)
+
+        @app_commands.describe(user="紐づけを解除するDiscordユーザー", mcid="紐づけを解除するMCID")
+        async def unlink(
+            interaction: discord.Interaction,
+            user: Optional[discord.Member] = None,
+            mcid: Optional[str] = None,
+        ) -> None:
+            await self._unlink_slash(interaction, user, mcid)
+
+        @app_commands.describe(user="確認するDiscordユーザー")
+        async def linkinfo(interaction: discord.Interaction, user: discord.Member) -> None:
+            await self._linkinfo_slash(interaction, user)
+
+        staff = discord.Permissions(manage_roles=True)
+        for name, description, callback in (
+            ("link", "（運営用）DiscordユーザーとMinecraftのMCIDを紐づけます", link),
+            ("unlink", "（運営用）DiscordユーザーとMCIDの紐づけを解除します", unlink),
+            ("linkinfo", "（運営用）Discordユーザーに紐づいているMCIDを確認します", linkinfo),
+        ):
+            command = app_commands.Command(name=name, description=description, callback=callback)
+            command.default_permissions = staff
+            command.guild_only = True
+            self.tree.add_command(command)
+
+    @staticmethod
+    def _is_staff(interaction: discord.Interaction) -> bool:
+        # default_permissions only hides the command; check again in case a server admin widened it.
+        perms = getattr(interaction.user, "guild_permissions", None)
+        return perms is not None and (perms.manage_roles or perms.administrator)
+
+    async def _link_slash(self, interaction: discord.Interaction, user: discord.Member, mcid: str) -> None:
+        if not self._is_staff(interaction) or self.link_store is None:
+            await interaction.response.send_message("この操作を行う権限がありません。", ephemeral=True)
+            return
+        mcid = mcid.strip()
+        if not MCID_PATTERN.match(mcid):
+            await interaction.response.send_message(
+                "MCIDの形式が正しくありません（英数字と「_」、統合版は先頭に「.」などの接頭辞）。", ephemeral=True
+            )
+            return
+        if user.bot:
+            await interaction.response.send_message("Botとは紐づけできません。", ephemeral=True)
+            return
+        replaced_user = self.link_store.discord_id_of(mcid)
+        previous = self.link_store.link(mcid, user.id, interaction.user.id)
+        safe = discord.utils.escape_markdown(mcid)
+        lines = [f"\N{WHITE HEAVY CHECK MARK} {user.mention} と **{safe}** を紐づけました。"]
+        if previous is not None:
+            lines.append(f"（このユーザーの以前の紐づけ **{discord.utils.escape_markdown(previous)}** は解除しました）")
+        if replaced_user is not None and replaced_user != user.id:
+            lines.append(f"（このMCIDは <@{replaced_user}> と紐づいていたため、付け替えました）")
+        await interaction.response.send_message(
+            "\n".join(lines), ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+        )
+
+    async def _unlink_slash(
+        self, interaction: discord.Interaction, user: Optional[discord.Member], mcid: Optional[str]
+    ) -> None:
+        if not self._is_staff(interaction) or self.link_store is None:
+            await interaction.response.send_message("この操作を行う権限がありません。", ephemeral=True)
+            return
+        if (user is None) == (mcid is None):
+            await interaction.response.send_message("user か mcid のどちらか一方を指定してください。", ephemeral=True)
+            return
+        if user is not None:
+            removed = self.link_store.unlink_user(user.id)
+            text = (f"{user.mention} と **{discord.utils.escape_markdown(removed)}** の紐づけを解除しました。"
+                    if removed is not None else f"{user.mention} は紐づけされていません。")
+        else:
+            removed_id = self.link_store.unlink_mcid(mcid)
+            safe = discord.utils.escape_markdown(mcid.strip())
+            text = (f"**{safe}** と <@{removed_id}> の紐づけを解除しました。"
+                    if removed_id is not None else f"**{safe}** は紐づけされていません。")
+        await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
+
+    async def _linkinfo_slash(self, interaction: discord.Interaction, user: discord.Member) -> None:
+        if not self._is_staff(interaction) or self.link_store is None:
+            await interaction.response.send_message("この操作を行う権限がありません。", ephemeral=True)
+            return
+        mcid = self.link_store.mcid_of(user.id)
+        text = (f"{user.mention} のMCIDは **{discord.utils.escape_markdown(mcid)}** です。"
+                if mcid is not None else f"{user.mention} は紐づけされていません。")
+        await interaction.response.send_message(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     async def relay_minecraft_chat(self, server_id: str, player: str, message_text: str) -> None:
         channel = self._channel_for(server_id, notify=False)

@@ -59,3 +59,11 @@ format:
   # Placeholder: {player}. Sent to notify_channel_id when a player joins/leaves.
   player_join: "\U0001F7E2 **{player}** が参加しました"
   player_leave: "\U0001F534 **{player}** が退出しました"
+
+# Dynamic voice channels (/hl vcc) requested by the himatsudoLife plugin through
+# the HTTP API. All keys are optional.
+# vc:
+#   state_file: "dynamic_vcs.json"
+#   empty_grace_seconds: 300
+#   # MCID <-> Discord links registered by staff with /link.
+#   links_file: "mc_links.json"
