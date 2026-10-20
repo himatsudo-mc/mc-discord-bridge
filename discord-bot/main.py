@@ -9,6 +9,7 @@ from pathlib import Path
 from bridge.config import load_config
 from bridge.discord_bot import DiscordBridgeBot
 from bridge.http_api import BridgeHttpApi
+from bridge.links import LinkStore
 from bridge.vc_manager import DynamicVcManager
 from bridge.ws_server import BridgeServer
 
@@ -31,7 +32,10 @@ async def main() -> None:
     )
     bot.bridge_server = server
     bot.vc_manager = DynamicVcManager(bot, Path(config.vc.state_file), config.vc.empty_grace_seconds)
-    BridgeHttpApi(bot, {link.server_id: link for link in config.links}, bot.vc_manager).add_routes(server.app)
+    bot.link_store = LinkStore(Path(config.vc.links_file))
+    BridgeHttpApi(
+        bot, {link.server_id: link for link in config.links}, bot.vc_manager, bot.link_store
+    ).add_routes(server.app)
 
     await server.start()
     try:

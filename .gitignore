@@ -13,6 +13,7 @@ discord-bot/venv/
 discord-bot/.env
 discord-bot/config.yml
 discord-bot/dynamic_vcs.json
+discord-bot/mc_links.json
 minecraft-plugin/src/main/resources/config.yml.local
 
 # OS / editor

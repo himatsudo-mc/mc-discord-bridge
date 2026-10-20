@@ -209,6 +209,11 @@ answers `401`. Responses are `{"ok": true, ...}` or
 `{"ok": false, "error": "..."}` with a 4xx/5xx status. Discord IDs are sent as
 strings. As with the WebSocket, use a TLS-terminating proxy on untrusted networks.
 
+Players are identified by their **in-game name (MCID)**. The bot resolves an
+MCID to a Discord user through the links staff register with the `/link`
+slash command (stored in `vc.links_file`, matched case-insensitively). Errors
+carry a machine-readable `code`; `not_linked` means the MCID has no link.
+
 ### `POST /api/v1/vc/create`
 
 | field         | meaning |
@@ -216,12 +221,13 @@ strings. As with the WebSocket, use a TLS-terminating proxy on untrusted network
 | `type`        | `friend`, `party` or `public` |
 | `name`        | channel name (e.g. `Party-Steve`), trimmed to 100 chars |
 | `category_id` | category the channel is created under |
-| `owner_id`    | Discord ID of the requester |
-| `member_ids`  | other Discord IDs allowed in (ignored for `public`; IDs not in the guild are skipped) |
+| `owner_mcid`  | MCID of the requester (must be linked, else `404 not_linked`) |
+| `member_mcids`| other MCIDs allowed in (ignored for `public`; unlinked names and users not in the guild are skipped) |
 
 `friend`/`party` channels hide from and refuse `@everyone`; only the owner and
 `member_ids` can see/connect. `public` inherits the category's permissions.
-Success returns `channel_id`, `guild_id` and a `url` that opens the channel.
+Success returns `channel_id`, `guild_id`, a `url` that opens the channel,
+`linked_mcids` (members who got access) and `unlinked_mcids` (skipped, not linked).
 
 The bot remembers every channel it creates (`vc.state_file`) and deletes it the
 moment `on_voice_state_update` shows it has 0 members. A one-minute sweep also
@@ -233,9 +239,26 @@ old (nobody ever joined, or they emptied while the bot was offline).
 | field        | meaning |
 |--------------|---------|
 | `action`     | `add` or `remove` |
-| `user_id`    | Discord ID of the player |
+| `mcid`       | the player's MCID |
 | `role_id`    | role to grant/revoke |
 | `channel_id` | the area's VC; its guild is where the role lives |
 
+`add` for an unlinked MCID answers `404 not_linked`; `remove` for an unlinked
+MCID (or a user no longer in the guild) succeeds without doing anything.
 The bot needs **Manage Roles** and its top role must sit above `role_id`. Whether
 the role can see/join the VC is configured on the channel in Discord.
+
+### Linking players (`/link`)
+
+Staff link a player in Discord; nothing is needed in-game. The commands are
+hidden from members without **Manage Roles** (server admins can adjust this in
+Server Settings → Integrations) and re-checked when run. Replies are ephemeral.
+
+| command | meaning |
+|---------|---------|
+| `/link user:<member> mcid:<name>` | link that member to that MCID. Re-linking either side replaces the old link. |
+| `/unlink user:<member>` or `/unlink mcid:<name>` | remove a link |
+| `/linkinfo user:<member>` | show the MCID linked to a member |
+
+Bedrock (Floodgate) players are linked with their in-game name including the
+prefix (e.g. `.Steve`). A player who changes their name must be linked again.

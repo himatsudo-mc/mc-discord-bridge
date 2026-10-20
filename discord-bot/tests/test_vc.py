@@ -10,6 +10,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from bridge.config import LinkSettings
 from bridge.http_api import ROUTE_AREA_ROLE, ROUTE_VC_CREATE, BridgeHttpApi
+from bridge.links import LinkStore
 from bridge.vc_manager import DynamicVcManager, VcError, sanitize_channel_name
 
 
@@ -151,8 +152,11 @@ async def api_client(state_file):
     vc = SimpleNamespace(guild=guild)
     bot.get_channel.side_effect = {99: category, 200: vc}.get
     manager = DynamicVcManager(bot, state_file, 300)
+    store = LinkStore(state_file.with_name("links.json"))
+    store.link("Steve", 1, 0)
+    store.link("Alex", 2, 0)
     app = web.Application()
-    BridgeHttpApi(bot, {"default": LinkSettings("default", "s3cret", 1, 1)}, manager).add_routes(app)
+    BridgeHttpApi(bot, {"default": LinkSettings("default", "s3cret", 1, 1)}, manager, store).add_routes(app)
     async with TestClient(TestServer(app)) as client:
         client.member, client.role, client.guild = member, role, guild
         yield client
@@ -170,23 +174,34 @@ async def test_api_requires_valid_token(api_client):
 async def test_api_vc_create(api_client):
     resp = await api_client.post(ROUTE_VC_CREATE, json={
         "server_id": "default", "token": "s3cret", "type": "party", "name": "Party-Steve",
-        "category_id": "99", "owner_id": "1", "member_ids": ["2"],
+        "category_id": "99", "owner_mcid": "steve", "member_mcids": ["Alex", "Nobody"],
     })
     data = await resp.json()
     assert resp.status == 200 and data["ok"] is True
     assert data["url"] == "https://discord.com/channels/10/555"
+    assert data["linked_mcids"] == ["Alex"]
+    assert data["unlinked_mcids"] == ["Nobody"]
+
+
+async def test_api_vc_create_requires_linked_owner(api_client):
+    resp = await api_client.post(ROUTE_VC_CREATE, json={
+        "server_id": "default", "token": "s3cret", "type": "public", "name": "x",
+        "category_id": "99", "owner_mcid": "Nobody",
+    })
+    assert resp.status == 404
+    assert (await resp.json())["code"] == "not_linked"
 
 
 async def test_api_vc_create_rejects_non_numeric_ids(api_client):
     resp = await api_client.post(ROUTE_VC_CREATE, json={
         "server_id": "default", "token": "s3cret", "type": "party", "name": "x",
-        "category_id": "abc", "owner_id": "1",
+        "category_id": "abc", "owner_mcid": "Steve",
     })
     assert resp.status == 400
 
 
 async def test_api_area_role_add_and_remove(api_client):
-    base = {"server_id": "default", "token": "s3cret", "user_id": "1", "role_id": "77", "channel_id": "200"}
+    base = {"server_id": "default", "token": "s3cret", "mcid": "Steve", "role_id": "77", "channel_id": "200"}
     assert (await api_client.post(ROUTE_AREA_ROLE, json={**base, "action": "add"})).status == 200
     api_client.member.add_roles.assert_awaited_once()
     assert (await api_client.post(ROUTE_AREA_ROLE, json={**base, "action": "remove"})).status == 200
@@ -194,3 +209,11 @@ async def test_api_area_role_add_and_remove(api_client):
     assert (await api_client.post(ROUTE_AREA_ROLE, json={**base, "action": "zap"})).status == 400
     assert (await api_client.post(ROUTE_AREA_ROLE, json={**base, "action": "add", "role_id": "1"})).status == 404
     assert (await api_client.post(ROUTE_AREA_ROLE, json={**base, "action": "add", "channel_id": "5"})).status == 404
+
+
+async def test_api_area_role_unlinked(api_client):
+    base = {"server_id": "default", "token": "s3cret", "mcid": "Nobody", "role_id": "77", "channel_id": "200"}
+    resp = await api_client.post(ROUTE_AREA_ROLE, json={**base, "action": "add"})
+    assert resp.status == 404 and (await resp.json())["code"] == "not_linked"
+    # Removing from someone who is not linked has nothing to do and is not an error.
+    assert (await api_client.post(ROUTE_AREA_ROLE, json={**base, "action": "remove"})).status == 200

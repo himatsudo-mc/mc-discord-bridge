@@ -65,3 +65,5 @@ format:
 # vc:
 #   state_file: "dynamic_vcs.json"
 #   empty_grace_seconds: 300
+#   # MCID <-> Discord links registered by staff with /link.
+#   links_file: "mc_links.json"

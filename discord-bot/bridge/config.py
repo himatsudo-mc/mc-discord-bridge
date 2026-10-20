@@ -52,6 +52,8 @@ class VcSettings:
     # An empty dynamic VC is deleted by the periodic sweep once it is at least this old
     # (covers channels nobody ever joined; channels that empty out are deleted immediately).
     empty_grace_seconds: float = 300.0
+    # MCID <-> Discord user links registered with /link.
+    links_file: str = "mc_links.json"
 
 
 @dataclass(frozen=True)
@@ -174,5 +176,6 @@ def load_config(config_path: str | Path = "config.yml", env_path: str | Path = "
         vc=VcSettings(
             state_file=str(vc_raw.get("state_file", "dynamic_vcs.json")),
             empty_grace_seconds=float(vc_raw.get("empty_grace_seconds", 300)),
+            links_file=str(vc_raw.get("links_file", "mc_links.json")),
         ),
     )

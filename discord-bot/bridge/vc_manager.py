@@ -30,9 +30,11 @@ _SWEEP_INTERVAL_SECONDS = 60
 class VcError(Exception):
     """A request that cannot be fulfilled; ``status`` is the HTTP status to answer with."""
 
-    def __init__(self, message: str, status: int = 400) -> None:
+    def __init__(self, message: str, status: int = 400, code: str = "bad_request") -> None:
         super().__init__(message)
         self.status = status
+        # Machine-readable reason for the plugin (e.g. "not_linked").
+        self.code = code
 
 
 def sanitize_channel_name(name: str) -> str:
@@ -117,7 +119,7 @@ class DynamicVcManager:
                 member = await self._fetch_member(guild, user_id)
                 if member is None:
                     if user_id == owner_id:
-                        raise VcError("owner is not a member of the guild", status=404)
+                        raise VcError("owner is not a member of the guild", status=404, code="not_in_guild")
                     continue
                 overwrites[member] = discord.PermissionOverwrite(view_channel=True, connect=True, speak=True)
 
