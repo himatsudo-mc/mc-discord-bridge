@@ -59,7 +59,8 @@ async def test_create_friend_vc_is_private_and_tracked(state_file):
     allowed = [t for t in overwrites if getattr(t, "id", None) in (1, 2)]
     assert len(allowed) == 2  # user 3 is not in the guild and is skipped
     assert manager.is_tracked(555)
-    assert json.loads(state_file.read_text())["555"] > 0
+    saved = json.loads(state_file.read_text())["555"]
+    assert saved["created_at"] > 0 and saved["guild_id"] == 10
 
 
 async def test_create_public_vc_has_no_overwrites(state_file):
@@ -93,7 +94,7 @@ def voice_channel(channel_id, members):
 
 async def test_deleted_when_last_member_leaves(state_file):
     manager = DynamicVcManager(MagicMock(), state_file, 300)
-    manager._channels[5] = time.time()
+    manager._channels[5] = tracked(time.time())
     ch = voice_channel(5, [])
     await manager.on_voice_state_update(None, SimpleNamespace(channel=ch), SimpleNamespace(channel=None))
     ch.delete.assert_awaited_once()
@@ -102,7 +103,7 @@ async def test_deleted_when_last_member_leaves(state_file):
 
 async def test_not_deleted_while_occupied_or_untracked_or_moved_within(state_file):
     manager = DynamicVcManager(MagicMock(), state_file, 300)
-    manager._channels[5] = time.time()
+    manager._channels[5] = tracked(time.time())
     occupied = voice_channel(5, [object()])
     await manager.on_voice_state_update(None, SimpleNamespace(channel=occupied), SimpleNamespace(channel=None))
     occupied.delete.assert_not_awaited()
@@ -115,23 +116,41 @@ async def test_not_deleted_while_occupied_or_untracked_or_moved_within(state_fil
     empty.delete.assert_not_awaited()
 
 
+def tracked(created_at, guild_id=10):
+    return {"created_at": created_at, "guild_id": guild_id}
+
+
 async def test_sweep_respects_grace_and_forgets_vanished(state_file):
     bot = MagicMock()
     old, fresh = voice_channel(1, []), voice_channel(2, [])
     bot.get_channel.side_effect = {1: old, 2: fresh}.get
     bot.is_ready.return_value = True
+    bot.get_guild.return_value = SimpleNamespace(unavailable=False)
     manager = DynamicVcManager(bot, state_file, 300)
-    manager._channels.update({1: time.time() - 1000, 2: time.time(), 3: time.time()})
+    manager._channels.update({1: tracked(time.time() - 1000), 2: tracked(time.time()), 3: tracked(time.time())})
     await manager.sweep()
     old.delete.assert_awaited_once()
     fresh.delete.assert_not_awaited()
-    assert not manager.is_tracked(3)
+    assert not manager.is_tracked(3)  # guild is fine but the channel is gone
     assert manager.is_tracked(2)
 
 
+async def test_sweep_keeps_channels_while_their_guild_is_unavailable(state_file):
+    bot = MagicMock()
+    bot.get_channel.return_value = None
+    bot.is_ready.return_value = True
+    manager = DynamicVcManager(bot, state_file, 300)
+    manager._channels.update({1: tracked(1.0), 2: tracked(1.0), 3: tracked(1.0, guild_id=None)})
+    # Channels 1 and 2: guild flagged unavailable. Channel 3: guild unknown (no guild_id recorded).
+    bot.get_guild.side_effect = lambda gid: None if gid is None else SimpleNamespace(unavailable=True)
+    await manager.sweep()
+    assert manager.is_tracked(1) and manager.is_tracked(2) and manager.is_tracked(3)
+
+
 async def test_state_survives_restart(state_file):
-    state_file.write_text(json.dumps({"7": 123.0}))
-    assert DynamicVcManager(MagicMock(), state_file, 1).is_tracked(7)
+    state_file.write_text(json.dumps({"7": {"created_at": 123.0, "guild_id": 10}, "8": 456.0}))
+    manager = DynamicVcManager(MagicMock(), state_file, 1)
+    assert manager.is_tracked(7) and manager.is_tracked(8)  # 8 is the older, creation-time-only format
 
 
 def test_sanitize_channel_name():

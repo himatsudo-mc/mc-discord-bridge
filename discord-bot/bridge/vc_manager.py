@@ -47,8 +47,8 @@ class DynamicVcManager:
         self._bot = bot
         self._state_file = state_file
         self._empty_grace_seconds = empty_grace_seconds
-        # channel id -> creation time (epoch seconds)
-        self._channels: Dict[int, float] = {}
+        # channel id -> {"created_at": epoch seconds, "guild_id": the channel's guild}
+        self._channels: Dict[int, dict] = {}
         self._sweep_task: Optional[asyncio.Task] = None
         self._load()
 
@@ -57,12 +57,19 @@ class DynamicVcManager:
     def _load(self) -> None:
         try:
             raw = json.loads(self._state_file.read_text(encoding="utf-8"))
-            self._channels = {int(k): float(v) for k, v in raw.items()}
+            self._channels = {int(k): self._entry_from_json(v) for k, v in raw.items()}
         except FileNotFoundError:
             self._channels = {}
         except (ValueError, TypeError, OSError):
             logger.exception("Could not read %s; starting with no tracked voice channels.", self._state_file)
             self._channels = {}
+
+    @staticmethod
+    def _entry_from_json(value: object) -> dict:
+        if isinstance(value, dict):  # current format
+            guild_id = value.get("guild_id")
+            return {"created_at": float(value["created_at"]), "guild_id": None if guild_id is None else int(guild_id)}
+        return {"created_at": float(value), "guild_id": None}  # older format: creation time only
 
     def _save(self) -> None:
         try:
@@ -132,7 +139,7 @@ class DynamicVcManager:
         except discord.HTTPException as exc:
             raise VcError(f"Discord rejected the channel: {exc}", status=502) from exc
 
-        self._channels[channel.id] = time.time()
+        self._channels[channel.id] = {"created_at": time.time(), "guild_id": guild.id}
         self._save()
         return channel
 
@@ -178,16 +185,20 @@ class DynamicVcManager:
         """Deletes tracked channels that are empty and old enough, and forgets vanished ones.
 
         Voice events only fire when someone leaves, so this catches channels nobody ever
-        joined and channels that emptied while the bot was offline.
+        joined and channels that emptied while the bot was offline. A channel is only
+        forgotten when its guild is loaded and available but the channel is gone; during a
+        Discord outage the guild (and so every channel) can be missing, and forgetting then
+        would leave the real channels undeleted forever.
         """
         now = time.time()
-        for channel_id, created_at in list(self._channels.items()):
+        for channel_id, entry in list(self._channels.items()):
             channel = self._bot.get_channel(channel_id)
             if channel is None:
-                if self._bot.is_ready():
+                guild = None if entry["guild_id"] is None else self._bot.get_guild(entry["guild_id"])
+                if self._bot.is_ready() and guild is not None and not guild.unavailable:
                     self._forget(channel_id)
                 continue
-            if len(getattr(channel, "members", [])) == 0 and now - created_at >= self._empty_grace_seconds:
+            if len(getattr(channel, "members", [])) == 0 and now - entry["created_at"] >= self._empty_grace_seconds:
                 await self._delete(channel)
 
     async def _sweep_loop(self) -> None:
