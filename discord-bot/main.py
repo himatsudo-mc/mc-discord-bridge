@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 
 from bridge.config import load_config
 from bridge.discord_bot import DiscordBridgeBot
+from bridge.http_api import BridgeHttpApi
+from bridge.vc_manager import DynamicVcManager
 from bridge.ws_server import BridgeServer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -27,11 +30,14 @@ async def main() -> None:
         on_player_leave=bot.notify_player_leave,
     )
     bot.bridge_server = server
+    bot.vc_manager = DynamicVcManager(bot, Path(config.vc.state_file), config.vc.empty_grace_seconds)
+    BridgeHttpApi(bot, {link.server_id: link for link in config.links}, bot.vc_manager).add_routes(server.app)
 
     await server.start()
     try:
         await bot.start(config.token)
     finally:
+        bot.vc_manager.stop()
         await server.stop()
         if not bot.is_closed():
             await bot.close()

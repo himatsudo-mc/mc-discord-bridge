@@ -46,12 +46,22 @@ class FormatSettings:
 
 
 @dataclass(frozen=True)
+class VcSettings:
+    # Where the ids of dynamically created voice channels are remembered across restarts.
+    state_file: str = "dynamic_vcs.json"
+    # An empty dynamic VC is deleted by the periodic sweep once it is at least this old
+    # (covers channels nobody ever joined; channels that empty out are deleted immediately).
+    empty_grace_seconds: float = 300.0
+
+
+@dataclass(frozen=True)
 class Config:
     token: str
     discord: DiscordSettings
     bridge: BridgeSettings
     format: FormatSettings
     links: list[LinkSettings]
+    vc: VcSettings = VcSettings()
 
 
 def _validate_secret(secret: str, where: str) -> str:
@@ -139,6 +149,7 @@ def load_config(config_path: str | Path = "config.yml", env_path: str | Path = "
     discord_raw = raw.get("discord", {})
     bridge_raw = raw.get("bridge", {})
     format_raw = raw.get("format", {})
+    vc_raw = raw.get("vc", {})
 
     links = _parse_links(raw)
 
@@ -160,4 +171,8 @@ def load_config(config_path: str | Path = "config.yml", env_path: str | Path = "
             player_leave=str(format_raw.get("player_leave", "\N{LARGE RED CIRCLE} **{player}** が退出しました")),
         ),
         links=links,
+        vc=VcSettings(
+            state_file=str(vc_raw.get("state_file", "dynamic_vcs.json")),
+            empty_grace_seconds=float(vc_raw.get("empty_grace_seconds", 300)),
+        ),
     )

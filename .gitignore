@@ -12,6 +12,7 @@ discord-bot/venv/
 # Secrets and local config
 discord-bot/.env
 discord-bot/config.yml
+discord-bot/dynamic_vcs.json
 minecraft-plugin/src/main/resources/config.yml.local
 
 # OS / editor

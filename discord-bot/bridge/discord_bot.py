@@ -27,6 +27,8 @@ class DiscordBridgeBot(commands.Bot):
         self._channel_to_server: Dict[int, str] = {link.chat_channel_id: link.server_id for link in config.links}
         # Wired up by main.py once the BridgeServer exists.
         self.bridge_server = None
+        # Likewise wired up by main.py (dynamic voice channels created via the HTTP API).
+        self.vc_manager = None
         self.tree.add_command(
             app_commands.Command(
                 name="players",
@@ -60,6 +62,14 @@ class DiscordBridgeBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.tree.sync()
+        if self.vc_manager is not None:
+            self.vc_manager.start()
+
+    async def on_voice_state_update(
+        self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+    ) -> None:
+        if self.vc_manager is not None:
+            await self.vc_manager.on_voice_state_update(member, before, after)
 
     async def _players_slash(self, interaction: discord.Interaction) -> None:
         server_id = self._channel_to_server.get(interaction.channel_id)

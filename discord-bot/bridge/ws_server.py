@@ -67,6 +67,11 @@ class BridgeServer:
         # only the server that was asked can answer.
         self._pending_players: Dict[Tuple[str, str], asyncio.Future] = {}
 
+    @property
+    def app(self) -> web.Application:
+        """The aiohttp application; extra routes must be added before ``start()``."""
+        return self._app
+
     async def start(self) -> None:
         self._runner = web.AppRunner(self._app)
         await self._runner.setup()
