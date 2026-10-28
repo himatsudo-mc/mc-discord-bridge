@@ -1,5 +1,6 @@
 # Java / Maven
 minecraft-plugin/target/
+velocity-plugin/target/
 *.class
 
 # Python

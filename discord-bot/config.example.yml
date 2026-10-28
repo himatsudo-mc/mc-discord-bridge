@@ -33,6 +33,12 @@ bridge:
   # entry older than max_queue_age_seconds.
   max_queue_size: 50
   max_queue_age_seconds: 30
+  # Velocity plugin (velocity-plugin/): how long to hold the "server started" notice
+  # waiting for Velocity's "connected" report so the two post in that order. Only
+  # applies while the Velocity plugin is connected; 0 disables the wait.
+  proxy_wait_seconds: 15
+  # Also post when Velocity loses the connection to the Minecraft server.
+  proxy_notify_down: false
 
 # --- Multi-server setup (optional) ----------------------------------------
 # Uncomment to bridge more than one Minecraft server to different Discord

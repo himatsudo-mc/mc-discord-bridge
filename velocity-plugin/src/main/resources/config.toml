@@ -1,0 +1,25 @@
+# Velocity -> mc-discord-bridge Discord bot.
+# This plugin checks that Velocity can reach the Minecraft server and tells the
+# Discord bot, which then posts "VelocityとMinecraftサーバーが接続出来ました".
+
+[bridge]
+host = "127.0.0.1"
+port = 8765
+# Must match the discord-bot's config.yml (bridge.secret, or links[].secret).
+secret = "CHANGE_ME_SHARED_SECRET"
+# Must match server.id of the Paper plugin on the home server (and the bot's
+# links[].server_id). Leave "default" for a single-server setup.
+server-id = "default"
+
+[bridge.reconnect]
+# Seconds between reconnect attempts to the bot (doubles up to max-delay).
+initial-delay = 5
+max-delay = 60
+
+[check]
+# Name of the home server, exactly as written under [servers] in velocity.toml.
+backend = "home"
+# Seconds between connection checks.
+interval-seconds = 5
+# Seconds before a check counts as failed.
+timeout-seconds = 5

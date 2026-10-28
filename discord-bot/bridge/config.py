@@ -34,6 +34,11 @@ class BridgeSettings:
     auth_timeout: float
     max_queue_size: int
     max_queue_age_seconds: float
+    # How long a server_start notice is held back while a connected Velocity plugin has not yet
+    # reported the backend as reachable, so "connected" is posted before "started". 0 disables.
+    proxy_wait_seconds: float = 15.0
+    # Also post to Discord when Velocity loses the connection to the Minecraft server.
+    proxy_notify_down: bool = False
 
 
 @dataclass(frozen=True)
@@ -166,6 +171,8 @@ def load_config(config_path: str | Path = "config.yml", env_path: str | Path = "
             auth_timeout=float(bridge_raw.get("auth_timeout", 10)),
             max_queue_size=int(bridge_raw.get("max_queue_size", 50)),
             max_queue_age_seconds=float(bridge_raw.get("max_queue_age_seconds", 30)),
+            proxy_wait_seconds=float(bridge_raw.get("proxy_wait_seconds", 15)),
+            proxy_notify_down=bool(bridge_raw.get("proxy_notify_down", False)),
         ),
         format=FormatSettings(
             minecraft_to_discord=str(format_raw.get("minecraft_to_discord", "**{player}**: {message}")),

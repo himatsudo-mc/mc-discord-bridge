@@ -1,6 +1,6 @@
 # Bridge Communication Protocol
 
-Version: 2.1
+Version: 2.2
 
 This document specifies the WebSocket protocol used between the Minecraft
 plugin (`minecraft-plugin/`) and the Discord bot (`discord-bot/`).
@@ -16,6 +16,9 @@ plugin (`minecraft-plugin/`) and the Discord bot (`discord-bot/`).
 - Version 2.1 adds an HTTP API on the same listener (used by the himatsudoLife
   plugin for area roles and dynamic voice channels). The WebSocket protocol is
   unchanged. See "HTTP API" below.
+
+- Version 2.2 adds the Velocity plugin: an optional `role: "proxy"` in `auth` and
+  the `proxy_link` message. Existing clients are unaffected. See "Proxy Link" below.
 
 ## Roles
 
@@ -262,3 +265,34 @@ Server Settings → Integrations) and re-checked when run. Replies are ephemeral
 
 Bedrock (Floodgate) players are linked with their in-game name including the
 prefix (e.g. `.Steve`). A player who changes their name must be linked again.
+
+
+## Proxy Link
+
+The Velocity plugin (`velocity-plugin/`) checks that the proxy can reach the
+backend Minecraft server and reports the result, so Discord can post
+"VelocityとMinecraftサーバーが接続出来ました" before the Paper plugin's
+"サーバーが起動しました".
+
+- The plugin authenticates like any client, adding `"role": "proxy"`:
+
+  ```json
+  {"type": "auth", "token": "<shared-secret>", "server_id": "<id>", "role": "proxy"}
+  ```
+
+  It uses the same `server_id` and secret as the Paper plugin of that server.
+  A `proxy` connection is held separately: it never replaces the Paper
+  plugin's connection (or vice versa), and it receives no chat.
+- Client → server: `{"type": "proxy_link", "status": "up" | "down", "backend": "<name>"}`,
+  sent after every check (every few seconds). The bot posts to the notify
+  channel only on a real *transition* (`down` only if `bridge.proxy_notify_down`
+  is true), so repeats are harmless. The first report after the bot starts is
+  recorded silently, so a bot restart doesn't post out of the blue.
+- Ordering: if a `proxy` connection is present and has not reported `up` since
+  the server's last `server_stop`, the bot holds a `server_start` notice for up
+  to `bridge.proxy_wait_seconds` (default 15) for `proxy_link: up`, posts that
+  first, then the start notice (or the start notice alone on timeout). `up`
+  reports between `server_stop` and the next `server_start` are ignored, since
+  the server still answers pings while shutting down. With no `proxy`
+  connection, `server_start` is posted immediately, exactly as before. Chat and
+  other messages are never delayed.

@@ -203,6 +203,21 @@ class DiscordBridgeBot(commands.Bot):
     async def notify_server_stop(self, server_id: str, server_name: str) -> None:
         await self._send_status_embed(server_id, server_name, started=False)
 
+    async def notify_proxy_link(self, server_id: str, status: str, backend: str) -> None:
+        """Velocity's connection check result for the Minecraft server (see PROTOCOL.md "Proxy link")."""
+        up = status == "up"
+        if not up and not self._config.bridge.proxy_notify_down:
+            return
+        channel = await self._channel_for(server_id, notify=True)
+        if channel is None:
+            return
+        embed = discord.Embed(
+            title="\N{LINK SYMBOL} VelocityとMinecraftサーバーが接続出来ました" if up
+            else "\N{WARNING SIGN} VelocityからMinecraftサーバーに接続出来なくなりました",
+            color=discord.Color.green() if up else discord.Color.orange(),
+        )
+        await channel.send(embed=embed)
+
     async def notify_player_join(self, server_id: str, player: str) -> None:
         await self._send_presence_notice(server_id, player, self._config.format.player_join)
 
