@@ -23,3 +23,19 @@ backend = "home"
 interval-seconds = 5
 # Seconds before a check counts as failed.
 timeout-seconds = 5
+
+[security]
+# 不正アクセスの検知。検知するとBotの security_channel_id へ通知します。
+# 自動でBANはしません（誤検知を避けるため、アク禁は /accessban で手動実行）。
+enabled = true
+# 同じ内容の通知を同一IP・同一種別で繰り返さない間隔（秒）。
+alert-cooldown-seconds = 300
+# 許可するプレイヤー名の正規表現（統合版の接頭辞を含む）。外れると通知します。
+name-pattern = "^[.*+A-Za-z0-9_]{1,17}$"
+# アク禁中のプレイヤーに表示する切断メッセージ。
+ban-message = "このサーバーへのアクセスは禁止されています。"
+
+[security.rate-limit]
+# 同一IPからこの回数以上、window-seconds 秒以内に接続を試みたら通知します。
+attempts = 10
+window-seconds = 60

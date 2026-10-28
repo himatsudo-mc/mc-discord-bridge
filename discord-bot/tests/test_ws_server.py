@@ -419,3 +419,34 @@ async def test_first_report_after_bot_start_is_silent(bridge):
     await asyncio.sleep(0.1)
     assert recorder.proxy_links == []
     await ws_proxy.close()
+
+
+async def test_security_alert_from_proxy_is_relayed(make_bridge, two_links):
+    alerts = []
+
+    async def on_alert(server_id, data):
+        alerts.append((server_id, data))
+
+    server, client, _recorder = await make_bridge(two_links)
+    server._on_security_alert = on_alert
+    ws = await _connect_proxy(client, "survival", "s1")
+    await ws.send_str(json.dumps({"type": "security_alert", "kind": "banned_attempt", "address": "1.2.3.4"}))
+    await _wait_for(lambda: len(alerts) == 1)
+    assert alerts[0][0] == "survival"
+    assert alerts[0][1]["kind"] == "banned_attempt"
+    await ws.close()
+
+
+async def test_security_alert_ignored_from_minecraft_plugin(make_bridge, two_links):
+    alerts = []
+
+    async def on_alert(server_id, data):
+        alerts.append(data)
+
+    server, client, _recorder = await make_bridge(two_links)
+    server._on_security_alert = on_alert
+    ws = await _connect(client, "survival", "s1")
+    await ws.send_str(json.dumps({"type": "security_alert", "kind": "banned_attempt"}))
+    await asyncio.sleep(0.2)
+    assert alerts == []
+    await ws.close()

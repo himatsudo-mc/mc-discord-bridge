@@ -20,6 +20,9 @@ plugin (`minecraft-plugin/`) and the Discord bot (`discord-bot/`).
 - Version 2.2 adds the Velocity plugin: an optional `role: "proxy"` in `auth` and
   the `proxy_link` message. Existing clients are unaffected. See "Proxy Link" below.
 
+- Version 2.3 adds the `security_alert` message from the Velocity plugin. Existing
+  clients are unaffected. See "Security Alerts" below.
+
 ## Roles
 
 - **Server**: the Discord bot (`discord-bot`). It hosts a WebSocket endpoint
@@ -296,3 +299,26 @@ backend Minecraft server and reports the result, so Discord can post
   the server still answers pings while shutting down. With no `proxy`
   connection, `server_start` is posted immediately, exactly as before. Chat and
   other messages are never delayed.
+
+
+## Security Alerts
+
+The Velocity plugin reports suspected unauthorized access over its `proxy`
+connection. Detection is advisory only; banning is done manually with the
+plugin's `/accessban` command.
+
+- Client → server (`proxy` role only; ignored from the Paper plugin):
+
+  ```json
+  {"type": "security_alert", "kind": "banned_attempt", "address": "203.0.113.5",
+   "player": "Steve", "detail": "free text", "count": 0}
+  ```
+
+  `kind` is one of `banned_attempt` (a banned IP/name tried to connect),
+  `rapid_connections` (too many attempts from one IP), `invalid_name`,
+  `ban_added` / `ban_removed` (audit log of `/accessban`). Unknown kinds are
+  still posted. While the plugin is disconnected it keeps the newest 20 alerts
+  and sends them after re-authenticating.
+- The bot posts these only to the link's `security_channel_id` (never to the
+  chat/notify channels, since they contain IP addresses). If it is `0`, the
+  alert is only logged.

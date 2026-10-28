@@ -36,6 +36,7 @@ ChatCallback = Callable[[str, str, str], Awaitable[None]]
 StatusCallback = Callable[[str, str], Awaitable[None]]
 PlayerCallback = Callable[[str, str], Awaitable[None]]
 ProxyLinkCallback = Callable[[str, str, str], Awaitable[None]]
+SecurityAlertCallback = Callable[[str, dict], Awaitable[None]]
 
 
 class BridgeServer:
@@ -48,6 +49,7 @@ class BridgeServer:
         on_player_join: PlayerCallback,
         on_player_leave: PlayerCallback,
         on_proxy_link: Optional[ProxyLinkCallback] = None,
+        on_security_alert: Optional[SecurityAlertCallback] = None,
     ) -> None:
         self._config = config
         self._on_chat = on_chat
@@ -56,6 +58,7 @@ class BridgeServer:
         self._on_player_join = on_player_join
         self._on_player_leave = on_player_leave
         self._on_proxy_link = on_proxy_link
+        self._on_security_alert = on_security_alert
         self._app = web.Application()
         self._app.router.add_get("/", self._handle_ws)
         self._runner: Optional[web.AppRunner] = None
@@ -238,6 +241,13 @@ class BridgeServer:
             data = json.loads(raw)
         except json.JSONDecodeError:
             logger.warning("Received malformed Velocity message from %r: %r", server_id, raw)
+            return
+        if data.get("type") == protocol.TYPE_SECURITY_ALERT:
+            try:
+                if self._on_security_alert is not None:
+                    await self._on_security_alert(server_id, data)
+            except Exception:
+                logger.exception("Failed to relay a security_alert from %r to Discord; dropping it.", server_id)
             return
         if data.get("type") != protocol.TYPE_PROXY_LINK:
             return

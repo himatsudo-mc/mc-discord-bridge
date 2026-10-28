@@ -14,6 +14,7 @@ TYPE_PLAYER_LEAVE = "player_leave"
 TYPE_PLAYERS_REQUEST = "players_request"
 TYPE_PLAYERS_RESPONSE = "players_response"
 TYPE_PROXY_LINK = "proxy_link"
+TYPE_SECURITY_ALERT = "security_alert"
 
 # Optional "role" in the auth message. A connection with this role is the
 # Velocity plugin; it is kept apart from the Paper plugin's connection even

@@ -18,6 +18,24 @@ logger = logging.getLogger("bridge.discord_bot")
 _EMBED_DESCRIPTION_LIMIT = 4096
 
 
+_SECURITY_KINDS = {
+    "banned_attempt": ("\N{NO ENTRY} アク禁中のプレイヤー/IPが接続を試みました", discord.Color.red()),
+    "rapid_connections": ("\N{WARNING SIGN} 短時間に大量の接続がありました", discord.Color.orange()),
+    "invalid_name": ("\N{WARNING SIGN} 不正なプレイヤー名での接続がありました", discord.Color.orange()),
+    "ban_added": ("\N{HAMMER} アク禁を追加しました", discord.Color.dark_grey()),
+    "ban_removed": ("\N{WHITE HEAVY CHECK MARK} アク禁を解除しました", discord.Color.dark_grey()),
+}
+
+
+def _clip(value: object, limit: int) -> str:
+    text = "" if value is None else str(value).strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _escape(text: str) -> str:
+    return discord.utils.escape_markdown(discord.utils.escape_mentions(text))
+
+
 class DiscordBridgeBot(commands.Bot):
     def __init__(self, config: Config) -> None:
         intents = discord.Intents.default()
@@ -217,6 +235,38 @@ class DiscordBridgeBot(commands.Bot):
             color=discord.Color.green() if up else discord.Color.orange(),
         )
         await channel.send(embed=embed)
+
+    async def notify_security_alert(self, server_id: str, alert: dict) -> None:
+        """Velocity's unauthorized-access alert, posted to the dedicated security channel only."""
+        link = self._links_by_id.get(server_id)
+        if link is None:
+            logger.warning("Received a security alert from unknown server_id %r; dropping.", server_id)
+            return
+        kind = str(alert.get("kind", ""))
+        title, color = _SECURITY_KINDS.get(
+            kind, (f"\N{WARNING SIGN} 不正アクセスの疑い ({_clip(kind, 40) or '不明'})", discord.Color.orange())
+        )
+        address = _clip(alert.get("address"), 64)
+        player = _clip(alert.get("player"), 64)
+        detail = _clip(alert.get("detail"), 500)
+        logger.warning("Security alert from %r: kind=%s address=%s player=%s detail=%s",
+                       server_id, kind, address, player, detail)
+        if not link.security_channel_id:
+            logger.warning("discord.security_channel_id (or links[].security_channel_id) is not set; "
+                           "the security alert was not posted to Discord.")
+            return
+        channel = await self._get_text_channel(link.security_channel_id)
+        if channel is None:
+            return
+        embed = discord.Embed(title=title, color=color)
+        embed.add_field(name="サーバー", value=_escape(server_id), inline=True)
+        if address:
+            embed.add_field(name="IPアドレス", value=_escape(address), inline=True)
+        if player:
+            embed.add_field(name="プレイヤー名", value=_escape(player), inline=True)
+        if detail:
+            embed.add_field(name="詳細", value=_escape(detail), inline=False)
+        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def notify_player_join(self, server_id: str, player: str) -> None:
         await self._send_presence_notice(server_id, player, self._config.format.player_join)

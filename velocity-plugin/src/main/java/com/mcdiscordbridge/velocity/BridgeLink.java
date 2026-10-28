@@ -7,6 +7,7 @@ import org.java_websocket.handshake.ServerHandshake;
 import org.slf4j.Logger;
 
 import java.net.URI;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -23,6 +24,9 @@ final class BridgeLink {
     private final ScheduledExecutorService scheduler;
     private final Logger logger;
 
+    private static final int MAX_PENDING_ALERTS = 20;
+
+    private final ConcurrentLinkedDeque<String> pendingAlerts = new ConcurrentLinkedDeque<>();
     private volatile Session session;
     private volatile String lastStatus;
     private volatile boolean shuttingDown;
@@ -54,6 +58,42 @@ final class BridgeLink {
     void publishStatus(String status) {
         lastStatus = status;
         sendStatus();
+    }
+
+    /**
+     * Sends an unauthorized-access alert to the bot. While disconnected, the newest few alerts
+     * are held and sent after the next successful authentication.
+     */
+    void sendSecurityAlert(String kind, String address, String player, String detail, int count) {
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "security_alert");
+        msg.addProperty("kind", kind);
+        msg.addProperty("address", address);
+        msg.addProperty("player", player);
+        msg.addProperty("detail", detail);
+        msg.addProperty("count", count);
+        pendingAlerts.addLast(msg.toString());
+        while (pendingAlerts.size() > MAX_PENDING_ALERTS) {
+            pendingAlerts.pollFirst();
+        }
+        flushAlerts();
+    }
+
+    private void flushAlerts() {
+        Session current = session;
+        if (current == null || !current.isOpen() || !current.authenticated) {
+            return;
+        }
+        String next;
+        while ((next = pendingAlerts.pollFirst()) != null) {
+            try {
+                current.send(next);
+            } catch (Exception e) {
+                pendingAlerts.addFirst(next);
+                logger.warn("Failed to send security_alert: {}", e.getMessage());
+                return;
+            }
+        }
     }
 
     void shutdown() {
@@ -120,6 +160,7 @@ final class BridgeLink {
                 reconnectDelaySeconds = config.reconnectInitialDelaySeconds();
                 logger.info("Connected and authenticated with the Discord bot.");
                 sendStatus();
+                flushAlerts();
             } else if ("auth_fail".equals(type)) {
                 logger.error("Authentication rejected by the Discord bot - check bridge.secret and "
                         + "bridge.server-id in config.toml.");

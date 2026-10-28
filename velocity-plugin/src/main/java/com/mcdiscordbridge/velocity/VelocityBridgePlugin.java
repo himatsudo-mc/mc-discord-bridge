@@ -58,6 +58,23 @@ public final class VelocityBridgePlugin {
         link = new BridgeLink(config, scheduler, logger);
         link.connect();
         new BackendMonitor(proxy, config, link, scheduler, logger).start();
+        registerAccessControl(config);
+    }
+
+    private void registerAccessControl(ProxyConfig config) {
+        AccessBanList bans = new AccessBanList(dataDirectory.resolve("access-bans.json"));
+        try {
+            bans.load();
+        } catch (Exception e) {
+            // Starting with an empty list would silently let banned players in, so refuse to guess.
+            logger.error("Could not read access-bans.json; access control is disabled until it is fixed.", e);
+            return;
+        }
+        AccessGuard guard = new AccessGuard(config, bans, link);
+        proxy.getEventManager().register(this, guard);
+        proxy.getCommandManager().register(
+                proxy.getCommandManager().metaBuilder("accessban").plugin(this).build(),
+                new AccessBanCommand(proxy, bans, guard, config, logger));
     }
 
     @Subscribe
