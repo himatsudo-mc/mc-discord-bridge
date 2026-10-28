@@ -9,7 +9,7 @@ from bridge.config import BridgeSettings, Config, DiscordSettings, FormatSetting
 from bridge.ws_server import BridgeServer
 
 
-def make_config(links, max_queue_size=50, max_queue_age_seconds=30, auth_timeout=2.0):
+def make_config(links, max_queue_size=50, max_queue_age_seconds=30, auth_timeout=2.0, proxy_wait_seconds=0.5):
     return Config(
         token="x",
         discord=DiscordSettings(command_prefix="!"),
@@ -19,6 +19,7 @@ def make_config(links, max_queue_size=50, max_queue_age_seconds=30, auth_timeout
             auth_timeout=auth_timeout,
             max_queue_size=max_queue_size,
             max_queue_age_seconds=max_queue_age_seconds,
+            proxy_wait_seconds=proxy_wait_seconds,
         ),
         format=FormatSettings(
             minecraft_to_discord="{player}: {message}",
@@ -36,6 +37,8 @@ class Recorder:
         self.stops = []
         self.joins = []
         self.leaves = []
+        self.proxy_links = []
+        self.events = []
         self.fail_next_chats = 0
 
     async def on_chat(self, server_id, player, message):
@@ -46,6 +49,11 @@ class Recorder:
 
     async def on_server_start(self, server_id, name):
         self.starts.append((server_id, name))
+        self.events.append("start")
+
+    async def on_proxy_link(self, server_id, status, backend):
+        self.proxy_links.append((server_id, status, backend))
+        self.events.append("proxy_" + status)
 
     async def on_server_stop(self, server_id, name):
         self.stops.append((server_id, name))
@@ -79,6 +87,7 @@ async def make_bridge():
             on_server_stop=recorder.on_server_stop,
             on_player_join=recorder.on_player_join,
             on_player_leave=recorder.on_player_leave,
+            on_proxy_link=recorder.on_proxy_link,
         )
         test_server = TestServer(server._app)
         client = TestClient(test_server)
@@ -266,3 +275,107 @@ async def test_players_response_from_other_server_is_ignored(bridge):
     assert await task is None
     await ws_a.close()
     await ws_b.close()
+
+
+async def _connect_proxy(client, server_id, secret):
+    ws = await client.ws_connect("/")
+    await ws.send_str(json.dumps({"type": "auth", "token": secret, "server_id": server_id, "role": "proxy"}))
+    reply = await ws.receive_json()
+    assert reply["type"] == "auth_ok", reply
+    return ws
+
+
+async def _wait_for(predicate, timeout=2.0):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while not predicate():
+        assert asyncio.get_running_loop().time() < deadline, "timed out"
+        await asyncio.sleep(0.01)
+
+
+async def test_proxy_connection_does_not_replace_minecraft_connection(bridge):
+    server, client, _recorder = bridge
+    ws_mc = await _connect(client, "survival", "s1")
+    ws_proxy = await _connect_proxy(client, "survival", "s1")
+
+    assert not ws_mc.closed
+    await server.broadcast_to_minecraft("survival", "Alice", "hi")
+    assert (await ws_mc.receive_json())["message"] == "hi"
+
+    await ws_mc.close()
+    await ws_proxy.close()
+
+
+async def test_proxy_requires_valid_secret(bridge):
+    _server, client, _recorder = bridge
+    ws = await client.ws_connect("/")
+    await ws.send_str(json.dumps({"type": "auth", "token": "bad", "server_id": "survival", "role": "proxy"}))
+    assert (await ws.receive_json())["type"] == "auth_fail"
+
+
+async def test_proxy_link_reported_only_on_change(bridge):
+    _server, client, recorder = bridge
+    ws = await _connect_proxy(client, "survival", "s1")
+    msg = json.dumps({"type": "proxy_link", "status": "up", "backend": "home"})
+    await ws.send_str(msg)
+    await ws.send_str(msg)
+    await ws.send_str(json.dumps({"type": "proxy_link", "status": "down", "backend": "home"}))
+    await _wait_for(lambda: len(recorder.proxy_links) == 2)
+    assert [s for _id, s, _b in recorder.proxy_links] == ["up", "down"]
+    await ws.close()
+
+
+async def test_server_start_is_not_delayed_without_proxy(bridge):
+    _server, client, recorder = bridge
+    ws = await _connect(client, "survival", "s1")
+    await ws.send_str(json.dumps({"type": "server_start", "server_name": "S"}))
+    await _wait_for(lambda: recorder.starts)
+    await ws.close()
+
+
+async def test_server_start_waits_for_proxy_link(bridge):
+    _server, client, recorder = bridge
+    ws_mc = await _connect(client, "survival", "s1")
+    ws_proxy = await _connect_proxy(client, "survival", "s1")
+
+    await ws_mc.send_str(json.dumps({"type": "server_start", "server_name": "S"}))
+    await asyncio.sleep(0.1)
+    assert recorder.starts == []
+
+    await ws_proxy.send_str(json.dumps({"type": "proxy_link", "status": "up", "backend": "home"}))
+    await _wait_for(lambda: recorder.starts)
+    assert recorder.events == ["proxy_up", "start"]
+    await ws_mc.close()
+    await ws_proxy.close()
+
+
+async def test_server_start_goes_out_after_timeout_if_proxy_silent(bridge):
+    _server, client, recorder = bridge
+    ws_mc = await _connect(client, "survival", "s1")
+    ws_proxy = await _connect_proxy(client, "survival", "s1")
+    await ws_mc.send_str(json.dumps({"type": "server_start", "server_name": "S"}))
+    await _wait_for(lambda: recorder.starts, timeout=3.0)
+    assert recorder.events == ["start"]
+    await ws_mc.close()
+    await ws_proxy.close()
+
+
+async def test_server_start_not_held_when_proxy_already_up(bridge):
+    _server, client, recorder = bridge
+    ws_mc = await _connect(client, "survival", "s1")
+    ws_proxy = await _connect_proxy(client, "survival", "s1")
+    await ws_proxy.send_str(json.dumps({"type": "proxy_link", "status": "up", "backend": "home"}))
+    await _wait_for(lambda: recorder.proxy_links)
+    await ws_mc.send_str(json.dumps({"type": "server_start", "server_name": "S"}))
+    await _wait_for(lambda: recorder.starts)
+    assert recorder.events == ["proxy_up", "start"]
+
+    # After a stop the next start must wait for a fresh check again.
+    await ws_mc.send_str(json.dumps({"type": "server_stop", "server_name": "S"}))
+    await _wait_for(lambda: recorder.stops)
+    await ws_mc.send_str(json.dumps({"type": "server_start", "server_name": "S"}))
+    await asyncio.sleep(0.1)
+    assert len(recorder.starts) == 1
+    await ws_proxy.send_str(json.dumps({"type": "proxy_link", "status": "up", "backend": "home"}))
+    await _wait_for(lambda: len(recorder.starts) == 2)
+    await ws_mc.close()
+    await ws_proxy.close()

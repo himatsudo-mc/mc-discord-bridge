@@ -13,3 +13,11 @@ TYPE_PLAYER_JOIN = "player_join"
 TYPE_PLAYER_LEAVE = "player_leave"
 TYPE_PLAYERS_REQUEST = "players_request"
 TYPE_PLAYERS_RESPONSE = "players_response"
+TYPE_PROXY_LINK = "proxy_link"
+
+# Optional "role" in the auth message. A connection with this role is the
+# Velocity plugin; it is kept apart from the Paper plugin's connection even
+# though both use the same server_id and secret.
+ROLE_PROXY = "proxy"
+PROXY_STATUS_UP = "up"
+PROXY_STATUS_DOWN = "down"

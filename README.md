@@ -4,6 +4,7 @@ Minecraft (Java Edition, Paper/Purpur 26.3) と Discord 間で、チャットの
 とサーバーの起動・停止通知を行う連携システムです。
 
 - `minecraft-plugin/` — Paper/Purpur 用プラグイン（Java）
+- `velocity-plugin/` — Velocity 用プラグイン（Java）。Velocity→マイクラサーバー間の疎通を確認して Bot に報告
 - `discord-bot/` — discord.py 製 Discord Bot（Python 3.10+）
 - `PROTOCOL.md` — 両者を繋ぐ WebSocket 通信プロトコル仕様書
 
@@ -17,6 +18,9 @@ Minecraft (Java Edition, Paper/Purpur 26.3) と Discord 間で、チャットの
 - **Discord → マイクラ**: 指定チャンネルの投稿をサーバー全体チャットへ転送
   （Bot自身の発言・コマンドプレフィックス付きメッセージは無視し、ループを防止）
 - **起動/停止通知**: サーバー起動完了時・シャットダウン時に Discord へ Embed 通知
+- **Velocity 疎通確認通知**: Velocity 側のプラグインが自宅サーバーへの疎通を確認し、
+  「VelocityとMinecraftサーバーが接続出来ました」→「Minecraftサーバーが起動しました」の順に通知します。
+  Velocity プラグインを入れない構成では従来どおり動作します
 - **入退室通知**: プレイヤーのログイン/ログアウトを指定チャンネルへ通知
 - **参加者一覧コマンド**: Discord のチャットチャンネルでスラッシュコマンド `/players` を
   実行すると、そのチャンネルに紐づく Minecraft サーバーの現在の参加者一覧（人数/最大人数付き）
@@ -92,7 +96,25 @@ Discord Bot 側と一致させてください:
   `links[].server_id` と完全に一致させてください（1サーバー構成では
   既定値 `"default"` のままで構いません）
 
-### 3. テスト（Discord Bot）
+### 3. Velocity プラグイン（任意）
+
+```bash
+cd velocity-plugin
+mvn package    # Java 17+
+```
+
+`target/mc-discord-bridge-velocity-1.0.0.jar` を Velocity の `plugins/` に入れて一度起動すると
+`plugins/mcdiscordbridge-velocity/config.toml` が生成されます。
+
+- `bridge.host` / `bridge.port` / `bridge.secret`: Bot への接続先と共有シークレット
+- `bridge.server-id`: Paper プラグインの `server.id`（Bot の `links[].server_id`）と同じ値
+- `check.backend`: `velocity.toml` の `[servers]` に書いた自宅サーバーの名前
+
+Bot 側の追加設定は不要です（`bridge.proxy_wait_seconds` / `proxy_notify_down` は任意）。
+Velocity 接続中は、起動通知を最大 `proxy_wait_seconds` 秒だけ待って疎通報告を先に流します。
+待っても報告が来なければ起動通知はそのまま送られます。
+
+### 4. テスト（Discord Bot）
 
 ```bash
 cd discord-bot
@@ -100,7 +122,7 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-### 4. 動作確認
+### 5. 動作確認
 
 1. Discord Bot を先に起動する
 2. Minecraft サーバーを起動する → 起動完了時に Discord へ通知が届くこと、

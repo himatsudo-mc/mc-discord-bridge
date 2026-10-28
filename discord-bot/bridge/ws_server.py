@@ -35,6 +35,7 @@ logger = logging.getLogger("bridge.ws_server")
 ChatCallback = Callable[[str, str, str], Awaitable[None]]
 StatusCallback = Callable[[str, str], Awaitable[None]]
 PlayerCallback = Callable[[str, str], Awaitable[None]]
+ProxyLinkCallback = Callable[[str, str, str], Awaitable[None]]
 
 
 class BridgeServer:
@@ -46,6 +47,7 @@ class BridgeServer:
         on_server_stop: StatusCallback,
         on_player_join: PlayerCallback,
         on_player_leave: PlayerCallback,
+        on_proxy_link: Optional[ProxyLinkCallback] = None,
     ) -> None:
         self._config = config
         self._on_chat = on_chat
@@ -53,6 +55,7 @@ class BridgeServer:
         self._on_server_stop = on_server_stop
         self._on_player_join = on_player_join
         self._on_player_leave = on_player_leave
+        self._on_proxy_link = on_proxy_link
         self._app = web.Application()
         self._app.router.add_get("/", self._handle_ws)
         self._runner: Optional[web.AppRunner] = None
@@ -66,6 +69,15 @@ class BridgeServer:
         # In-flight players_request calls, keyed by (server_id, request_id) so
         # only the server that was asked can answer.
         self._pending_players: Dict[Tuple[str, str], asyncio.Future] = {}
+
+        # Velocity plugin connections (role "proxy"), one per server_id. They never take part in
+        # chat relaying, so they live apart from self._connections.
+        self._proxy_connections: Dict[str, web.WebSocketResponse] = {}
+        # Last backend state the Velocity plugin reported: "up" / "down" (absent = unknown).
+        self._proxy_state: Dict[str, str] = {}
+        # server_start notices waiting for the proxy to report "up", keyed by server_id.
+        self._proxy_waiters: Dict[str, List[asyncio.Future]] = defaultdict(list)
+        self._background_tasks: set = set()
 
     @property
     def app(self) -> web.Application:
@@ -82,7 +94,7 @@ class BridgeServer:
         )
 
     async def stop(self) -> None:
-        for ws in list(self._connections.values()):
+        for ws in [*self._connections.values(), *self._proxy_connections.values()]:
             if not ws.closed:
                 await ws.close()
         if self._runner is not None:
@@ -166,10 +178,14 @@ class BridgeServer:
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
 
-        server_id = await self._authenticate(ws)
-        if server_id is None:
+        auth = await self._authenticate(ws)
+        if auth is None:
             await ws.close(code=4001, message=b"unauthorized")
             return ws
+        server_id, role = auth
+
+        if role == protocol.ROLE_PROXY:
+            return await self._serve_proxy(server_id, ws)
 
         async with self._locks[server_id]:
             old_ws = self._connections.get(server_id)
@@ -195,7 +211,79 @@ class BridgeServer:
 
         return ws
 
-    async def _authenticate(self, ws: web.WebSocketResponse) -> Optional[str]:
+    async def _serve_proxy(self, server_id: str, ws: web.WebSocketResponse) -> web.WebSocketResponse:
+        old_ws = self._proxy_connections.get(server_id)
+        if old_ws is not None and not old_ws.closed:
+            await old_ws.close()
+        self._proxy_connections[server_id] = ws
+        logger.info("Velocity plugin for %r connected and authenticated.", server_id)
+        try:
+            async for msg in ws:
+                if msg.type == web.WSMsgType.TEXT:
+                    await self._handle_proxy_message(server_id, msg.data)
+                elif msg.type == web.WSMsgType.ERROR:
+                    logger.warning("Velocity connection error for %r: %s", server_id, ws.exception())
+        finally:
+            if self._proxy_connections.get(server_id) is ws:
+                self._proxy_connections.pop(server_id, None)
+                self._release_proxy_waiters(server_id)
+            logger.info("Velocity plugin for %r disconnected.", server_id)
+        return ws
+
+    async def _handle_proxy_message(self, server_id: str, raw: str) -> None:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Received malformed Velocity message from %r: %r", server_id, raw)
+            return
+        if data.get("type") != protocol.TYPE_PROXY_LINK:
+            return
+        status = str(data.get("status", ""))
+        if status not in (protocol.PROXY_STATUS_UP, protocol.PROXY_STATUS_DOWN):
+            return
+        changed = self._proxy_state.get(server_id) != status
+        self._proxy_state[server_id] = status
+        try:
+            if changed and self._on_proxy_link is not None:
+                await self._on_proxy_link(server_id, status, str(data.get("backend", "")))
+        except Exception:
+            logger.exception("Failed to relay a proxy_link message from %r to Discord; dropping it.", server_id)
+        finally:
+            if status == protocol.PROXY_STATUS_UP:
+                self._release_proxy_waiters(server_id)
+
+    def _release_proxy_waiters(self, server_id: str) -> None:
+        for future in self._proxy_waiters.pop(server_id, []):
+            if not future.done():
+                future.set_result(None)
+
+    def _should_hold_server_start(self, server_id: str) -> bool:
+        """True while a connected Velocity plugin has yet to report the backend as reachable."""
+        if self._config.bridge.proxy_wait_seconds <= 0:
+            return False
+        ws = self._proxy_connections.get(server_id)
+        if ws is None or ws.closed:
+            return False
+        return self._proxy_state.get(server_id) != protocol.PROXY_STATUS_UP
+
+    async def _deliver_server_start(self, server_id: str, server_name: str) -> None:
+        """Posts server_start, first giving Velocity a moment to report its connection check."""
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._proxy_waiters[server_id].append(future)
+        try:
+            await asyncio.wait_for(future, timeout=self._config.bridge.proxy_wait_seconds)
+        except asyncio.TimeoutError:
+            logger.info("Velocity did not report %r reachable in time; posting server start anyway.", server_id)
+        finally:
+            waiters = self._proxy_waiters.get(server_id)
+            if waiters and future in waiters:
+                waiters.remove(future)
+        try:
+            await self._on_server_start(server_id, server_name)
+        except Exception:
+            logger.exception("Failed to relay a server_start message from %r to Discord; dropping it.", server_id)
+
+    async def _authenticate(self, ws: web.WebSocketResponse) -> Optional[Tuple[str, str]]:
         try:
             msg = await asyncio.wait_for(ws.receive(), timeout=self._config.bridge.auth_timeout)
         except asyncio.TimeoutError:
@@ -240,7 +328,8 @@ class BridgeServer:
             server_id = link.server_id
 
         await ws.send_str(json.dumps({"type": protocol.TYPE_AUTH_OK}))
-        return server_id
+        role = protocol.ROLE_PROXY if data.get("role") == protocol.ROLE_PROXY else ""
+        return server_id, role
 
     async def _handle_message(self, server_id: str, raw: str) -> None:
         try:
@@ -254,8 +343,18 @@ class BridgeServer:
             if msg_type == protocol.TYPE_CHAT:
                 await self._on_chat(server_id, str(data.get("player", "?")), str(data.get("message", "")))
             elif msg_type == protocol.TYPE_SERVER_START:
-                await self._on_server_start(server_id, str(data.get("server_name", "Minecraft Server")))
+                server_name = str(data.get("server_name", "Minecraft Server"))
+                if self._should_hold_server_start(server_id):
+                    # Run apart from the receive loop so chat from this server isn't stalled meanwhile.
+                    task = asyncio.create_task(self._deliver_server_start(server_id, server_name))
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                else:
+                    await self._on_server_start(server_id, server_name)
             elif msg_type == protocol.TYPE_SERVER_STOP:
+                # The backend is going away; forget "up" so the next start waits for a fresh check.
+                if server_id in self._proxy_state:
+                    self._proxy_state[server_id] = protocol.PROXY_STATUS_DOWN
                 await self._on_server_stop(server_id, str(data.get("server_name", "Minecraft Server")))
             elif msg_type == protocol.TYPE_PLAYER_JOIN:
                 await self._on_player_join(server_id, str(data.get("player", "?")))
