@@ -18,6 +18,24 @@ logger = logging.getLogger("bridge.discord_bot")
 _EMBED_DESCRIPTION_LIMIT = 4096
 
 
+_SECURITY_KINDS = {
+    "banned_attempt": ("\N{NO ENTRY} アク禁中のプレイヤー/IPが接続を試みました", discord.Color.red()),
+    "rapid_connections": ("\N{WARNING SIGN} 短時間に大量の接続がありました", discord.Color.orange()),
+    "invalid_name": ("\N{WARNING SIGN} 不正なプレイヤー名での接続がありました", discord.Color.orange()),
+    "ban_added": ("\N{HAMMER} アク禁を追加しました", discord.Color.dark_grey()),
+    "ban_removed": ("\N{WHITE HEAVY CHECK MARK} アク禁を解除しました", discord.Color.dark_grey()),
+}
+
+
+def _clip(value: object, limit: int) -> str:
+    text = "" if value is None else str(value).strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _escape(text: str) -> str:
+    return discord.utils.escape_markdown(discord.utils.escape_mentions(text))
+
+
 class DiscordBridgeBot(commands.Bot):
     def __init__(self, config: Config) -> None:
         intents = discord.Intents.default()
@@ -40,6 +58,7 @@ class DiscordBridgeBot(commands.Bot):
             )
         )
         self._add_link_commands()
+        self._add_accessban_command()
 
     async def on_ready(self) -> None:
         logger.info("Logged in to Discord as %s", self.user)
@@ -127,6 +146,94 @@ class DiscordBridgeBot(commands.Bot):
             command.default_permissions = staff
             command.guild_only = True
             self.tree.add_command(command)
+
+    def _add_accessban_command(self) -> None:
+        """Staff-only /accessban, executed on the Velocity plugin (same operations as its in-game command)."""
+
+        @app_commands.describe(
+            action="追加 / 解除 / 一覧",
+            target="IPアドレスまたはプレイヤー名（一覧では不要）",
+            reason="アク禁の理由（追加時のみ・任意）",
+            server="対象サーバー（複数サーバー構成で、実行チャンネルから判別できない場合に指定）",
+        )
+        @app_commands.choices(action=[
+            app_commands.Choice(name="追加 (add)", value="add"),
+            app_commands.Choice(name="解除 (remove)", value="remove"),
+            app_commands.Choice(name="一覧 (list)", value="list"),
+        ])
+        async def accessban(
+            interaction: discord.Interaction,
+            action: app_commands.Choice[str],
+            target: Optional[str] = None,
+            reason: Optional[str] = None,
+            server: Optional[str] = None,
+        ) -> None:
+            await self._accessban_slash(interaction, action.value, target, reason, server)
+
+        command = app_commands.Command(
+            name="accessban", description="（運営用）IPアドレス/プレイヤー名をアク禁にします", callback=accessban
+        )
+
+        @command.autocomplete("server")
+        async def server_autocomplete(interaction: discord.Interaction, current: str):
+            return [
+                app_commands.Choice(name=server_id, value=server_id)
+                for server_id in self._links_by_id if current.lower() in server_id.lower()
+            ][:25]
+
+        command.default_permissions = discord.Permissions(manage_roles=True)
+        command.guild_only = True
+        self.tree.add_command(command)
+
+    def _server_for_interaction(self, interaction: discord.Interaction, requested: Optional[str]) -> Optional[str]:
+        """The server a command targets: the one named, the only one, or the one whose channel it ran in.
+
+        None if that is ambiguous, e.g. several servers share one security channel.
+        """
+        if requested:
+            return requested if requested in self._links_by_id else None
+        if len(self._links_by_id) == 1:
+            return next(iter(self._links_by_id))
+        matches = [
+            link.server_id for link in self._links_by_id.values()
+            if interaction.channel_id in (link.chat_channel_id, link.notify_channel_id, link.security_channel_id)
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    async def _accessban_slash(
+        self,
+        interaction: discord.Interaction,
+        action: str,
+        target: Optional[str],
+        reason: Optional[str],
+        server: Optional[str] = None,
+    ) -> None:
+        if not self._is_staff(interaction) or self.bridge_server is None:
+            await interaction.response.send_message("この操作を行う権限がありません。", ephemeral=True)
+            return
+        server_id = self._server_for_interaction(interaction, (server or "").strip())
+        if server_id is None:
+            await interaction.response.send_message(
+                "対象のサーバーを判別できません。server で対象サーバーを指定してください"
+                f"（{', '.join(self._links_by_id)}）。", ephemeral=True
+            )
+            return
+        target = (target or "").strip()
+        if action != "list" and (not target or len(target.split()) != 1):
+            await interaction.response.send_message(
+                "target にIPアドレスまたはプレイヤー名を1つ指定してください。", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        # The unique username (not the editable display name) goes into the ban list and audit log.
+        ok, message = await self.bridge_server.request_accessban(
+            server_id, action, target, (reason or "").strip(), f"{interaction.user.name} ({interaction.user.id})"
+        )
+        icon = "\N{WHITE HEAVY CHECK MARK}" if ok else "\N{CROSS MARK}"
+        text = f"{icon} {discord.utils.escape_markdown(discord.utils.escape_mentions(message))}"
+        if len(text) > 1900:
+            text = text[:1900].rsplit("\n", 1)[0] + "\n…（長いため省略。全件は Velocity の /accessban list で確認してください）"
+        await interaction.followup.send(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @staticmethod
     def _is_staff(interaction: discord.Interaction) -> bool:
@@ -217,6 +324,38 @@ class DiscordBridgeBot(commands.Bot):
             color=discord.Color.green() if up else discord.Color.orange(),
         )
         await channel.send(embed=embed)
+
+    async def notify_security_alert(self, server_id: str, alert: dict) -> None:
+        """Velocity's unauthorized-access alert, posted to the dedicated security channel only."""
+        link = self._links_by_id.get(server_id)
+        if link is None:
+            logger.warning("Received a security alert from unknown server_id %r; dropping.", server_id)
+            return
+        kind = str(alert.get("kind", ""))
+        title, color = _SECURITY_KINDS.get(
+            kind, (f"\N{WARNING SIGN} 不正アクセスの疑い ({_clip(kind, 40) or '不明'})", discord.Color.orange())
+        )
+        address = _clip(alert.get("address"), 64)
+        player = _clip(alert.get("player"), 64)
+        detail = _clip(alert.get("detail"), 500)
+        logger.warning("Security alert from %r: kind=%s address=%s player=%s detail=%s",
+                       server_id, kind, address, player, detail)
+        if not link.security_channel_id:
+            logger.warning("discord.security_channel_id (or links[].security_channel_id) is not set; "
+                           "the security alert was not posted to Discord.")
+            return
+        channel = await self._get_text_channel(link.security_channel_id)
+        if channel is None:
+            return
+        embed = discord.Embed(title=title, color=color)
+        embed.add_field(name="サーバー", value=_escape(server_id), inline=True)
+        if address:
+            embed.add_field(name="IPアドレス", value=_escape(address), inline=True)
+        if player:
+            embed.add_field(name="プレイヤー名", value=_escape(player), inline=True)
+        if detail:
+            embed.add_field(name="詳細", value=_escape(detail), inline=False)
+        await channel.send(embed=embed, allowed_mentions=discord.AllowedMentions.none())
 
     async def notify_player_join(self, server_id: str, player: str) -> None:
         await self._send_presence_notice(server_id, player, self._config.format.player_join)

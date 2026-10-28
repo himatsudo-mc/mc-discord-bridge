@@ -12,7 +12,11 @@ import java.nio.file.Path;
  */
 record ProxyConfig(String host, int port, String secret, String serverId,
                    int reconnectInitialDelaySeconds, int reconnectMaxDelaySeconds,
-                   String backend, int intervalSeconds, int timeoutSeconds) {
+                   String backend, int intervalSeconds, int timeoutSeconds,
+                   boolean securityEnabled, int rateLimitAttempts, int rateLimitWindowSeconds,
+                   int alertCooldownSeconds, String namePattern, String banMessage) {
+
+    static final String DEFAULT_NAME_PATTERN = "^[.*+A-Za-z0-9_]{1,17}$";
 
     static ProxyConfig load(Path dataDirectory) throws IOException {
         Files.createDirectories(dataDirectory);
@@ -35,6 +39,12 @@ record ProxyConfig(String host, int port, String secret, String serverId,
                 toml.getLong("bridge.reconnect.max-delay", 60L).intValue(),
                 toml.getString("check.backend", "home"),
                 Math.max(1, toml.getLong("check.interval-seconds", 5L).intValue()),
-                Math.max(1, toml.getLong("check.timeout-seconds", 5L).intValue()));
+                Math.max(1, toml.getLong("check.timeout-seconds", 5L).intValue()),
+                toml.getBoolean("security.enabled", true),
+                Math.max(2, toml.getLong("security.rate-limit.attempts", 10L).intValue()),
+                Math.max(1, toml.getLong("security.rate-limit.window-seconds", 60L).intValue()),
+                Math.max(0, toml.getLong("security.alert-cooldown-seconds", 300L).intValue()),
+                toml.getString("security.name-pattern", DEFAULT_NAME_PATTERN),
+                toml.getString("security.ban-message", "このサーバーへのアクセスは禁止されています。"));
     }
 }

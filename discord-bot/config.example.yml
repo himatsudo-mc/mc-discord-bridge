@@ -12,6 +12,9 @@ discord:
   # Channel that receives server start/stop notifications. May be the same
   # channel as chat_channel_id.
   notify_channel_id: 0
+  # Channel that receives the Velocity plugin's unauthorized-access alerts and ban
+  # audit logs. Keep it staff-only (it shows IP addresses). 0 = alerts are only logged.
+  security_channel_id: 0
   # Discord messages starting with this prefix are treated as bot commands
   # and are never relayed to Minecraft.
   command_prefix: "!"
@@ -51,6 +54,7 @@ bridge:
 #     secret: "CHANGE_ME_SURVIVAL_SECRET"
 #     chat_channel_id: 111111111111111111
 #     notify_channel_id: 111111111111111111
+#     security_channel_id: 333333333333333333
 #   - server_id: "creative"
 #     secret: "CHANGE_ME_CREATIVE_SECRET"
 #     chat_channel_id: 222222222222222222

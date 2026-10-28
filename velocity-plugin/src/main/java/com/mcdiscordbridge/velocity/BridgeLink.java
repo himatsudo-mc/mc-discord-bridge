@@ -7,6 +7,7 @@ import org.java_websocket.handshake.ServerHandshake;
 import org.slf4j.Logger;
 
 import java.net.URI;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -23,6 +24,10 @@ final class BridgeLink {
     private final ScheduledExecutorService scheduler;
     private final Logger logger;
 
+    private static final int MAX_PENDING_ALERTS = 20;
+
+    private final ConcurrentLinkedDeque<String> pendingAlerts = new ConcurrentLinkedDeque<>();
+    private volatile AccessBanService accessBanService;
     private volatile Session session;
     private volatile String lastStatus;
     private volatile boolean shuttingDown;
@@ -54,6 +59,81 @@ final class BridgeLink {
     void publishStatus(String status) {
         lastStatus = status;
         sendStatus();
+    }
+
+    /**
+     * Sends an unauthorized-access alert to the bot. While disconnected, the newest few alerts
+     * are held and sent after the next successful authentication.
+     */
+    void sendSecurityAlert(String kind, String address, String player, String detail, int count) {
+        JsonObject msg = new JsonObject();
+        msg.addProperty("type", "security_alert");
+        msg.addProperty("kind", kind);
+        msg.addProperty("address", address);
+        msg.addProperty("player", player);
+        msg.addProperty("detail", detail);
+        msg.addProperty("count", count);
+        pendingAlerts.addLast(msg.toString());
+        while (pendingAlerts.size() > MAX_PENDING_ALERTS) {
+            pendingAlerts.pollFirst();
+        }
+        flushAlerts();
+    }
+
+    private void flushAlerts() {
+        Session current = session;
+        if (current == null || !current.isOpen() || !current.authenticated) {
+            return;
+        }
+        String next;
+        while ((next = pendingAlerts.pollFirst()) != null) {
+            try {
+                current.send(next);
+            } catch (Exception e) {
+                pendingAlerts.addFirst(next);
+                logger.warn("Failed to send security_alert: {}", e.getMessage());
+                return;
+            }
+        }
+    }
+
+    /** Lets Discord's /accessban run on this proxy (accessban_request -> accessban_response). */
+    void setAccessBanHandler(AccessBanService service) {
+        this.accessBanService = service;
+    }
+
+    private void handleAccessBanRequest(JsonObject req) {
+        AccessBanService service = accessBanService;
+        String action = str(req, "action");
+        String by = str(req, "by").isBlank() ? "Discord" : "Discord: " + str(req, "by");
+        AccessBanService.Result result;
+        if (service == null) {
+            result = new AccessBanService.Result(false, "アク禁機能が無効です。Velocityのログを確認してください。");
+        } else {
+            switch (action) {
+                case "add" -> result = service.add(str(req, "target"), str(req, "reason"), by);
+                case "remove" -> result = service.remove(str(req, "target"), by);
+                case "list" -> result = new AccessBanService.Result(true, String.join("\n", service.list()));
+                default -> result = new AccessBanService.Result(false, "不明な操作です: " + action);
+            }
+        }
+        JsonObject resp = new JsonObject();
+        resp.addProperty("type", "accessban_response");
+        resp.addProperty("request_id", str(req, "request_id"));
+        resp.addProperty("ok", result.ok());
+        resp.addProperty("message", result.message());
+        Session current = session;
+        if (current != null && current.isOpen()) {
+            try {
+                current.send(resp.toString());
+            } catch (Exception e) {
+                logger.warn("Failed to send accessban_response: {}", e.getMessage());
+            }
+        }
+    }
+
+    private static String str(JsonObject o, String key) {
+        return o.has(key) && !o.get(key).isJsonNull() ? o.get(key).getAsString() : "";
     }
 
     void shutdown() {
@@ -109,10 +189,17 @@ final class BridgeLink {
 
         @Override
         public void onMessage(String message) {
+            JsonObject json;
             String type;
             try {
-                type = JsonParser.parseString(message).getAsJsonObject().get("type").getAsString();
+                json = JsonParser.parseString(message).getAsJsonObject();
+                type = json.get("type").getAsString();
             } catch (Exception e) {
+                return;
+            }
+            if ("accessban_request".equals(type) && authenticated) {
+                // Off the WebSocket thread: it touches disk and disconnects players.
+                scheduler.execute(() -> handleAccessBanRequest(json));
                 return;
             }
             if ("auth_ok".equals(type)) {
@@ -120,6 +207,7 @@ final class BridgeLink {
                 reconnectDelaySeconds = config.reconnectInitialDelaySeconds();
                 logger.info("Connected and authenticated with the Discord bot.");
                 sendStatus();
+                flushAlerts();
             } else if ("auth_fail".equals(type)) {
                 logger.error("Authentication rejected by the Discord bot - check bridge.secret and "
                         + "bridge.server-id in config.toml.");

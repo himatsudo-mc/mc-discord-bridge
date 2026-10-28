@@ -30,6 +30,7 @@ async def main() -> None:
         on_player_join=bot.notify_player_join,
         on_player_leave=bot.notify_player_leave,
         on_proxy_link=bot.notify_proxy_link,
+        on_security_alert=bot.notify_security_alert,
     )
     bot.bridge_server = server
     bot.vc_manager = DynamicVcManager(bot, Path(config.vc.state_file), config.vc.empty_grace_seconds)

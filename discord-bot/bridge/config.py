@@ -20,6 +20,8 @@ class LinkSettings:
     secret: str
     chat_channel_id: int
     notify_channel_id: int
+    # Receives Velocity's unauthorized-access alerts. 0 = not configured (alerts are only logged).
+    security_channel_id: int = 0
 
 
 @dataclass(frozen=True)
@@ -116,6 +118,7 @@ def _parse_links(raw: dict) -> list[LinkSettings]:
                     secret=secret,
                     chat_channel_id=chat_channel_id,
                     notify_channel_id=int(entry.get("notify_channel_id", chat_channel_id)),
+                    security_channel_id=int(entry.get("security_channel_id", 0)),
                 )
             )
         return links
@@ -131,6 +134,7 @@ def _parse_links(raw: dict) -> list[LinkSettings]:
             secret=secret,
             chat_channel_id=int(discord_raw.get("chat_channel_id", 0)),
             notify_channel_id=int(discord_raw.get("notify_channel_id", 0)),
+            security_channel_id=int(discord_raw.get("security_channel_id", 0)),
         )
     ]
 

@@ -156,3 +156,34 @@ def test_links_with_invalid_server_id_rejected(tmp_path):
 
     with pytest.raises(RuntimeError, match="server_id"):
         load_config(config_path, env_path)
+
+
+def test_security_channel_id_is_parsed_for_legacy_and_links(tmp_path):
+    config_path, env_path = _write(
+        tmp_path,
+        """
+        discord:
+          chat_channel_id: 1
+          notify_channel_id: 2
+          security_channel_id: 3
+        bridge:
+          secret: "real"
+        """,
+    )
+    assert load_config(config_path, env_path).links[0].security_channel_id == 3
+
+    config_path, env_path = _write(
+        tmp_path,
+        """
+        links:
+          - server_id: a
+            secret: "real"
+            chat_channel_id: 1
+            security_channel_id: 7
+          - server_id: b
+            secret: "real"
+            chat_channel_id: 2
+        """,
+    )
+    links = load_config(config_path, env_path).links
+    assert [l.security_channel_id for l in links] == [7, 0]

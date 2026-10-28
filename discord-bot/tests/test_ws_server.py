@@ -419,3 +419,58 @@ async def test_first_report_after_bot_start_is_silent(bridge):
     await asyncio.sleep(0.1)
     assert recorder.proxy_links == []
     await ws_proxy.close()
+
+
+async def test_security_alert_from_proxy_is_relayed(make_bridge, two_links):
+    alerts = []
+
+    async def on_alert(server_id, data):
+        alerts.append((server_id, data))
+
+    server, client, _recorder = await make_bridge(two_links)
+    server._on_security_alert = on_alert
+    ws = await _connect_proxy(client, "survival", "s1")
+    await ws.send_str(json.dumps({"type": "security_alert", "kind": "banned_attempt", "address": "1.2.3.4"}))
+    await _wait_for(lambda: len(alerts) == 1)
+    assert alerts[0][0] == "survival"
+    assert alerts[0][1]["kind"] == "banned_attempt"
+    await ws.close()
+
+
+async def test_security_alert_ignored_from_minecraft_plugin(make_bridge, two_links):
+    alerts = []
+
+    async def on_alert(server_id, data):
+        alerts.append(data)
+
+    server, client, _recorder = await make_bridge(two_links)
+    server._on_security_alert = on_alert
+    ws = await _connect(client, "survival", "s1")
+    await ws.send_str(json.dumps({"type": "security_alert", "kind": "banned_attempt"}))
+    await asyncio.sleep(0.2)
+    assert alerts == []
+    await ws.close()
+
+
+async def test_accessban_request_roundtrip_with_proxy(bridge):
+    server, client, _recorder = bridge
+    ws = await _connect_proxy(client, "survival", "s1")
+
+    async def velocity():
+        req = await ws.receive_json()
+        assert req["type"] == "accessban_request"
+        assert (req["action"], req["target"], req["reason"], req["by"]) == ("add", "1.2.3.4", "spam", "alice")
+        await ws.send_str(json.dumps(
+            {"type": "accessban_response", "request_id": req["request_id"], "ok": True, "message": "done"}))
+
+    task = asyncio.create_task(velocity())
+    result = await server.request_accessban("survival", "add", "1.2.3.4", "spam", "alice", timeout=2)
+    await task
+    assert result == (True, "done")
+    await ws.close()
+
+
+async def test_accessban_request_fails_without_proxy(bridge):
+    server, _client, _recorder = bridge
+    ok, message = await server.request_accessban("survival", "list", timeout=1)
+    assert ok is False and "Velocity" in message

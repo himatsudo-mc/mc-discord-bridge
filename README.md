@@ -21,6 +21,10 @@ Minecraft (Java Edition, Paper/Purpur 26.3) と Discord 間で、チャットの
 - **Velocity 疎通確認通知**: Velocity 側のプラグインが自宅サーバーへの疎通を確認し、
   「VelocityとMinecraftサーバーが接続出来ました」→「Minecraftサーバーが起動しました」の順に通知します。
   Velocity プラグインを入れない構成では従来どおり動作します
+- **不正アクセス通知とアク禁**: Velocity プラグインが不正アクセスの疑い（アク禁中IPからの接続、
+  短時間の大量接続、不正なプレイヤー名）を検知し、通常の通知チャンネルとは別の
+  「不正アクセスログ用チャンネル」（`security_channel_id`）へ通知します。誤検知で正規プレイヤーを
+  締め出さないよう**自動BANはせず**、Velocity で `/accessban` を使って手動でアク禁にします
 - **入退室通知**: プレイヤーのログイン/ログアウトを指定チャンネルへ通知
 - **参加者一覧コマンド**: Discord のチャットチャンネルでスラッシュコマンド `/players` を
   実行すると、そのチャンネルに紐づく Minecraft サーバーの現在の参加者一覧（人数/最大人数付き）
@@ -111,6 +115,22 @@ mvn package    # Java 17+
 - `check.backend`: `velocity.toml` の `[servers]` に書いた自宅サーバーの名前
 
 Bot 側の追加設定は不要です（`bridge.proxy_wait_seconds` / `proxy_notify_down` は任意）。
+不正アクセス通知を使う場合は、Bot の `config.yml` に不正アクセスログ用チャンネルを設定してください
+（`discord.security_channel_id`、複数サーバー構成では `links[].security_channel_id`。
+IPアドレスが載るため運営のみ閲覧できるチャンネルを推奨。未設定なら通知はログ出力のみ）。
+
+**アク禁コマンド**（Velocity のコンソール／権限 `mcdiscordbridge.accessban` を持つプレイヤー、または
+Discord の `/accessban action:<追加|解除|一覧> target:<IP|名前> reason:<理由>`。Discord 版は「ロールの管理」権限者のみ・
+返信は実行者だけに表示され、Velocity プラグインが接続中のときだけ使えます。複数サーバー構成では対象サーバーのチャンネルで実行するか、
+`server:` で対象サーバーを指定）:
+
+- `/accessban add <IPアドレス|プレイヤー名> [理由]`: アク禁に追加し、接続中の該当者を切断します
+- `/accessban remove <IPアドレス|プレイヤー名>`: アク禁を解除します
+- `/accessban list`: アク禁リストを表示します
+
+アク禁リストは `plugins/mcdiscordbridge-velocity/access-bans.json` に保存され、追加/解除の操作も
+不正アクセスログ用チャンネルに記録されます。検知条件（接続回数のしきい値、名前の許可パターン、
+通知の再送間隔）は `config.toml` の `[security]` で調整できます。
 Velocity 接続中は、起動通知を最大 `proxy_wait_seconds` 秒だけ待って疎通報告を先に流します。
 待っても報告が来なければ起動通知はそのまま送られます。
 
