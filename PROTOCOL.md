@@ -283,11 +283,16 @@ backend Minecraft server and reports the result, so Discord can post
   It uses the same `server_id` and secret as the Paper plugin of that server.
   A `proxy` connection is held separately: it never replaces the Paper
   plugin's connection (or vice versa), and it receives no chat.
-- Client → server: `{"type": "proxy_link", "status": "up" | "down", "backend": "<name>"}`.
-  The bot posts to the notify channel only when the status *changes* (`down`
-  only if `bridge.proxy_notify_down` is true), so the plugin may resend freely.
+- Client → server: `{"type": "proxy_link", "status": "up" | "down", "backend": "<name>"}`,
+  sent after every check (every few seconds). The bot posts to the notify
+  channel only on a real *transition* (`down` only if `bridge.proxy_notify_down`
+  is true), so repeats are harmless. The first report after the bot starts is
+  recorded silently, so a bot restart doesn't post out of the blue.
 - Ordering: if a `proxy` connection is present and has not reported `up` since
   the server's last `server_stop`, the bot holds a `server_start` notice for up
-  to `bridge.proxy_wait_seconds` (default 15) for `proxy_link: up`, then posts it
-  regardless. With no `proxy` connection, `server_start` is posted immediately,
-  exactly as before. Chat and other messages are never delayed.
+  to `bridge.proxy_wait_seconds` (default 15) for `proxy_link: up`, posts that
+  first, then the start notice (or the start notice alone on timeout). `up`
+  reports between `server_stop` and the next `server_start` are ignored, since
+  the server still answers pings while shutting down. With no `proxy`
+  connection, `server_start` is posted immediately, exactly as before. Chat and
+  other messages are never delayed.

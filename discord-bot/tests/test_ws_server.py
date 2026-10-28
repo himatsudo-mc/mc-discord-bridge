@@ -316,6 +316,7 @@ async def test_proxy_link_reported_only_on_change(bridge):
     _server, client, recorder = bridge
     ws = await _connect_proxy(client, "survival", "s1")
     msg = json.dumps({"type": "proxy_link", "status": "up", "backend": "home"})
+    await ws.send_str(json.dumps({"type": "proxy_link", "status": "down", "backend": "home"}))
     await ws.send_str(msg)
     await ws.send_str(msg)
     await ws.send_str(json.dumps({"type": "proxy_link", "status": "down", "backend": "home"}))
@@ -363,6 +364,7 @@ async def test_server_start_not_held_when_proxy_already_up(bridge):
     _server, client, recorder = bridge
     ws_mc = await _connect(client, "survival", "s1")
     ws_proxy = await _connect_proxy(client, "survival", "s1")
+    await ws_proxy.send_str(json.dumps({"type": "proxy_link", "status": "down", "backend": "home"}))
     await ws_proxy.send_str(json.dumps({"type": "proxy_link", "status": "up", "backend": "home"}))
     await _wait_for(lambda: recorder.proxy_links)
     await ws_mc.send_str(json.dumps({"type": "server_start", "server_name": "S"}))
@@ -378,4 +380,42 @@ async def test_server_start_not_held_when_proxy_already_up(bridge):
     await ws_proxy.send_str(json.dumps({"type": "proxy_link", "status": "up", "backend": "home"}))
     await _wait_for(lambda: len(recorder.starts) == 2)
     await ws_mc.close()
+    await ws_proxy.close()
+
+
+async def test_up_reports_during_shutdown_are_not_announced(bridge):
+    # Velocity reports every few seconds, and the server keeps answering pings for a
+    # moment after server_stop - that must not post "connected" right after "stopping".
+    _server, client, recorder = bridge
+    ws_mc = await _connect(client, "survival", "s1")
+    ws_proxy = await _connect_proxy(client, "survival", "s1")
+    up = json.dumps({"type": "proxy_link", "status": "up", "backend": "home"})
+    await ws_proxy.send_str(json.dumps({"type": "proxy_link", "status": "down", "backend": "home"}))
+    await ws_proxy.send_str(up)
+    await _wait_for(lambda: recorder.proxy_links)
+
+    await ws_mc.send_str(json.dumps({"type": "server_stop", "server_name": "S"}))
+    await _wait_for(lambda: recorder.stops)
+    await ws_proxy.send_str(up)
+    await asyncio.sleep(0.1)
+    assert recorder.events == ["proxy_up"]
+
+    # Restarted faster than Velocity noticed: the next start still gets "connected" first.
+    await ws_mc.send_str(json.dumps({"type": "server_start", "server_name": "S"}))
+    await asyncio.sleep(0.1)
+    await ws_proxy.send_str(up)
+    await _wait_for(lambda: recorder.starts)
+    assert recorder.events == ["proxy_up", "proxy_up", "start"]
+    await ws_mc.close()
+    await ws_proxy.close()
+
+
+async def test_first_report_after_bot_start_is_silent(bridge):
+    # A bot restart (or Velocity starting next to an already running server) must not
+    # post "connected" out of the blue.
+    _server, client, recorder = bridge
+    ws_proxy = await _connect_proxy(client, "survival", "s1")
+    await ws_proxy.send_str(json.dumps({"type": "proxy_link", "status": "up", "backend": "home"}))
+    await asyncio.sleep(0.1)
+    assert recorder.proxy_links == []
     await ws_proxy.close()

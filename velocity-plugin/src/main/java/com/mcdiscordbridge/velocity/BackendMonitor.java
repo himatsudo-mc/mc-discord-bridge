@@ -23,7 +23,7 @@ final class BackendMonitor {
     private final Logger logger;
 
     private final AtomicBoolean inFlight = new AtomicBoolean(false);
-    private Boolean lastUp;
+    private volatile Boolean lastUp;
     private boolean warnedMissing;
 
     BackendMonitor(ProxyServer proxy, ProxyConfig config, BridgeLink link,

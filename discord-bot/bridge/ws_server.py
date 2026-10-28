@@ -75,6 +75,9 @@ class BridgeServer:
         self._proxy_connections: Dict[str, web.WebSocketResponse] = {}
         # Last backend state the Velocity plugin reported: "up" / "down" (absent = unknown).
         self._proxy_state: Dict[str, str] = {}
+        # server_ids that sent server_stop and haven't been seen "down" by Velocity since. Their
+        # "up" reports are stale (the server answers pings while shutting down) until it restarts.
+        self._proxy_restarting: set = set()
         # server_start notices waiting for the proxy to report "up", keyed by server_id.
         self._proxy_waiters: Dict[str, List[asyncio.Future]] = defaultdict(list)
         self._background_tasks: set = set()
@@ -241,10 +244,24 @@ class BridgeServer:
         status = str(data.get("status", ""))
         if status not in (protocol.PROXY_STATUS_UP, protocol.PROXY_STATUS_DOWN):
             return
-        changed = self._proxy_state.get(server_id) != status
+        previous = self._proxy_state.get(server_id)
         self._proxy_state[server_id] = status
+        waiting = bool(self._proxy_waiters.get(server_id))
+        # Velocity reports every few seconds; only real transitions are posted. The first report
+        # (bot just started) is silent unless a server_start is waiting on it.
+        if status == protocol.PROXY_STATUS_DOWN:
+            self._proxy_restarting.discard(server_id)
+            announce = previous == protocol.PROXY_STATUS_UP
+        elif server_id in self._proxy_restarting:
+            # Stopped but Velocity never saw it go down: announce once the restart's
+            # server_start is waiting, ignore the shutdown-time reports before that.
+            announce = waiting
+            if waiting:
+                self._proxy_restarting.discard(server_id)
+        else:
+            announce = previous == protocol.PROXY_STATUS_DOWN or (previous is None and waiting)
         try:
-            if changed and self._on_proxy_link is not None:
+            if announce and self._on_proxy_link is not None:
                 await self._on_proxy_link(server_id, status, str(data.get("backend", "")))
         except Exception:
             logger.exception("Failed to relay a proxy_link message from %r to Discord; dropping it.", server_id)
@@ -264,7 +281,10 @@ class BridgeServer:
         ws = self._proxy_connections.get(server_id)
         if ws is None or ws.closed:
             return False
-        return self._proxy_state.get(server_id) != protocol.PROXY_STATUS_UP
+        return (
+            self._proxy_state.get(server_id) != protocol.PROXY_STATUS_UP
+            or server_id in self._proxy_restarting
+        )
 
     async def _deliver_server_start(self, server_id: str, server_name: str) -> None:
         """Posts server_start, first giving Velocity a moment to report its connection check."""
@@ -352,9 +372,8 @@ class BridgeServer:
                 else:
                     await self._on_server_start(server_id, server_name)
             elif msg_type == protocol.TYPE_SERVER_STOP:
-                # The backend is going away; forget "up" so the next start waits for a fresh check.
-                if server_id in self._proxy_state:
-                    self._proxy_state[server_id] = protocol.PROXY_STATUS_DOWN
+                # The backend is going away; the next start must wait for a fresh check.
+                self._proxy_restarting.add(server_id)
                 await self._on_server_stop(server_id, str(data.get("server_name", "Minecraft Server")))
             elif msg_type == protocol.TYPE_PLAYER_JOIN:
                 await self._on_player_join(server_id, str(data.get("player", "?")))
