@@ -72,6 +72,8 @@ class BridgeServer:
         # In-flight players_request calls, keyed by (server_id, request_id) so
         # only the server that was asked can answer.
         self._pending_players: Dict[Tuple[str, str], asyncio.Future] = {}
+        # In-flight accessban_request calls to the Velocity plugin, keyed like _pending_players.
+        self._pending_accessban: Dict[Tuple[str, str], asyncio.Future] = {}
 
         # Velocity plugin connections (role "proxy"), one per server_id. They never take part in
         # chat relaying, so they live apart from self._connections.
@@ -158,6 +160,35 @@ class BridgeServer:
         finally:
             self._pending_players.pop(key, None)
 
+    async def request_accessban(
+        self, server_id: str, action: str, target: str = "", reason: str = "", by: str = "", timeout: float = 10.0
+    ) -> Tuple[bool, str]:
+        """Runs /accessban (add/remove/list) on the Velocity plugin; returns (ok, message).
+
+        Never queued: the operator needs a live answer. Fails with a message if Velocity is not connected.
+        """
+        ws = self._proxy_connections.get(server_id)
+        if ws is None or ws.closed:
+            return False, "Velocityプラグインが接続されていないため実行できません。"
+        request_id = uuid.uuid4().hex
+        future: asyncio.Future = asyncio.get_running_loop().create_future()
+        key = (server_id, request_id)
+        self._pending_accessban[key] = future
+        try:
+            await ws.send_str(json.dumps({
+                "type": protocol.TYPE_ACCESSBAN_REQUEST, "request_id": request_id,
+                "action": action, "target": target, "reason": reason, "by": by,
+            }))
+            return await asyncio.wait_for(future, timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning("Velocity %r did not answer accessban_request in time.", server_id)
+            return False, "Velocityから応答がありませんでした。"
+        except Exception:
+            logger.exception("Failed to send accessban_request to %r.", server_id)
+            return False, "Velocityへの送信に失敗しました。"
+        finally:
+            self._pending_accessban.pop(key, None)
+
     async def _flush_queue_locked(self, server_id: str, ws: web.WebSocketResponse) -> None:
         """Flushes server_id's queue to ws. Must be called while holding self._locks[server_id]."""
         queue = self._queues.get(server_id)
@@ -241,6 +272,11 @@ class BridgeServer:
             data = json.loads(raw)
         except json.JSONDecodeError:
             logger.warning("Received malformed Velocity message from %r: %r", server_id, raw)
+            return
+        if data.get("type") == protocol.TYPE_ACCESSBAN_RESPONSE:
+            future = self._pending_accessban.get((server_id, str(data.get("request_id", ""))))
+            if future is not None and not future.done():
+                future.set_result((bool(data.get("ok")), str(data.get("message", ""))))
             return
         if data.get("type") == protocol.TYPE_SECURITY_ALERT:
             try:

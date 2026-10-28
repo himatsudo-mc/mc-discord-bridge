@@ -72,9 +72,11 @@ public final class VelocityBridgePlugin {
         }
         AccessGuard guard = new AccessGuard(config, bans, link);
         proxy.getEventManager().register(this, guard);
+        AccessBanService service = new AccessBanService(proxy, bans, guard, config, logger);
         proxy.getCommandManager().register(
                 proxy.getCommandManager().metaBuilder("accessban").plugin(this).build(),
-                new AccessBanCommand(proxy, bans, guard, config, logger));
+                new AccessBanCommand(proxy, service));
+        link.setAccessBanHandler(service);
     }
 
     @Subscribe

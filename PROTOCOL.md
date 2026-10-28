@@ -322,3 +322,13 @@ plugin's `/accessban` command.
 - The bot posts these only to the link's `security_channel_id` (never to the
   chat/notify channels, since they contain IP addresses). If it is `0`, the
   alert is only logged.
+
+### Remote `/accessban`
+
+Discord's `/accessban` is executed on the Velocity plugin so both sides share one ban list.
+
+- Server → client (`proxy` connection): `{"type": "accessban_request", "request_id": "...",
+  "action": "add" | "remove" | "list", "target": "<ip or name>", "reason": "...", "by": "<Discord name>"}`
+- Client → server: `{"type": "accessban_response", "request_id": "...", "ok": true, "message": "..."}`
+
+If no `proxy` connection exists, the bot answers the operator with an error instead of queueing.

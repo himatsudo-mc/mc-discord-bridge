@@ -119,7 +119,9 @@ Bot 側の追加設定は不要です（`bridge.proxy_wait_seconds` / `proxy_not
 （`discord.security_channel_id`、複数サーバー構成では `links[].security_channel_id`。
 IPアドレスが載るため運営のみ閲覧できるチャンネルを推奨。未設定なら通知はログ出力のみ）。
 
-**アク禁コマンド**（Velocity のコンソール、または権限 `mcdiscordbridge.accessban` を持つプレイヤー）:
+**アク禁コマンド**（Velocity のコンソール／権限 `mcdiscordbridge.accessban` を持つプレイヤー、または
+Discord の `/accessban action:<追加|解除|一覧> target:<IP|名前> reason:<理由>`。Discord 版は「ロールの管理」権限者のみ・
+返信は実行者だけに表示され、Velocity プラグインが接続中のときだけ使えます。複数サーバー構成では対象サーバーのチャンネルで実行）:
 
 - `/accessban add <IPアドレス|プレイヤー名> [理由]`: アク禁に追加し、接続中の該当者を切断します
 - `/accessban remove <IPアドレス|プレイヤー名>`: アク禁を解除します

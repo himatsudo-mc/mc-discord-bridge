@@ -58,6 +58,7 @@ class DiscordBridgeBot(commands.Bot):
             )
         )
         self._add_link_commands()
+        self._add_accessban_command()
 
     async def on_ready(self) -> None:
         logger.info("Logged in to Discord as %s", self.user)
@@ -145,6 +146,71 @@ class DiscordBridgeBot(commands.Bot):
             command.default_permissions = staff
             command.guild_only = True
             self.tree.add_command(command)
+
+    def _add_accessban_command(self) -> None:
+        """Staff-only /accessban, executed on the Velocity plugin (same operations as its in-game command)."""
+
+        @app_commands.describe(
+            action="追加 / 解除 / 一覧",
+            target="IPアドレスまたはプレイヤー名（一覧では不要）",
+            reason="アク禁の理由（追加時のみ・任意）",
+        )
+        @app_commands.choices(action=[
+            app_commands.Choice(name="追加 (add)", value="add"),
+            app_commands.Choice(name="解除 (remove)", value="remove"),
+            app_commands.Choice(name="一覧 (list)", value="list"),
+        ])
+        async def accessban(
+            interaction: discord.Interaction,
+            action: app_commands.Choice[str],
+            target: Optional[str] = None,
+            reason: Optional[str] = None,
+        ) -> None:
+            await self._accessban_slash(interaction, action.value, target, reason)
+
+        command = app_commands.Command(
+            name="accessban", description="（運営用）IPアドレス/プレイヤー名をアク禁にします", callback=accessban
+        )
+        command.default_permissions = discord.Permissions(manage_roles=True)
+        command.guild_only = True
+        self.tree.add_command(command)
+
+    def _server_for_interaction(self, interaction: discord.Interaction) -> Optional[str]:
+        """The server a command targets: the only one, else the one whose channel it was run in."""
+        if len(self._links_by_id) == 1:
+            return next(iter(self._links_by_id))
+        for link in self._links_by_id.values():
+            if interaction.channel_id in (link.chat_channel_id, link.notify_channel_id, link.security_channel_id):
+                return link.server_id
+        return None
+
+    async def _accessban_slash(
+        self, interaction: discord.Interaction, action: str, target: Optional[str], reason: Optional[str]
+    ) -> None:
+        if not self._is_staff(interaction) or self.bridge_server is None:
+            await interaction.response.send_message("この操作を行う権限がありません。", ephemeral=True)
+            return
+        server_id = self._server_for_interaction(interaction)
+        if server_id is None:
+            await interaction.response.send_message(
+                "対象のサーバーを判別できません。そのサーバーに紐づくチャンネルで実行してください。", ephemeral=True
+            )
+            return
+        target = (target or "").strip()
+        if action != "list" and (not target or len(target.split()) != 1):
+            await interaction.response.send_message(
+                "target にIPアドレスまたはプレイヤー名を1つ指定してください。", ephemeral=True
+            )
+            return
+        await interaction.response.defer(ephemeral=True)
+        ok, message = await self.bridge_server.request_accessban(
+            server_id, action, target, (reason or "").strip(), interaction.user.display_name
+        )
+        icon = "\N{WHITE HEAVY CHECK MARK}" if ok else "\N{CROSS MARK}"
+        text = f"{icon} {discord.utils.escape_markdown(discord.utils.escape_mentions(message))}"
+        await interaction.followup.send(
+            text[:1900], ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
+        )
 
     @staticmethod
     def _is_staff(interaction: discord.Interaction) -> bool:

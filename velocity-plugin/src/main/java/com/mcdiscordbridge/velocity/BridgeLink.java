@@ -7,6 +7,7 @@ import org.java_websocket.handshake.ServerHandshake;
 import org.slf4j.Logger;
 
 import java.net.URI;
+import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -27,6 +28,7 @@ final class BridgeLink {
     private static final int MAX_PENDING_ALERTS = 20;
 
     private final ConcurrentLinkedDeque<String> pendingAlerts = new ConcurrentLinkedDeque<>();
+    private volatile AccessBanService accessBanService;
     private volatile Session session;
     private volatile String lastStatus;
     private volatile boolean shuttingDown;
@@ -96,6 +98,49 @@ final class BridgeLink {
         }
     }
 
+    /** Lets Discord's /accessban run on this proxy (accessban_request -> accessban_response). */
+    void setAccessBanHandler(AccessBanService service) {
+        this.accessBanService = service;
+    }
+
+    private void handleAccessBanRequest(JsonObject req) {
+        AccessBanService service = accessBanService;
+        String action = str(req, "action");
+        String by = str(req, "by").isBlank() ? "Discord" : "Discord: " + str(req, "by");
+        AccessBanService.Result result;
+        List<String> lines = null;
+        if (service == null) {
+            result = new AccessBanService.Result(false, "アク禁機能が無効です。Velocityのログを確認してください。");
+        } else {
+            switch (action) {
+                case "add" -> result = service.add(str(req, "target"), str(req, "reason"), by);
+                case "remove" -> result = service.remove(str(req, "target"), by);
+                case "list" -> {
+                    lines = service.list();
+                    result = new AccessBanService.Result(true, String.join("\n", lines));
+                }
+                default -> result = new AccessBanService.Result(false, "不明な操作です: " + action);
+            }
+        }
+        JsonObject resp = new JsonObject();
+        resp.addProperty("type", "accessban_response");
+        resp.addProperty("request_id", str(req, "request_id"));
+        resp.addProperty("ok", result.ok());
+        resp.addProperty("message", result.message());
+        Session current = session;
+        if (current != null && current.isOpen()) {
+            try {
+                current.send(resp.toString());
+            } catch (Exception e) {
+                logger.warn("Failed to send accessban_response: {}", e.getMessage());
+            }
+        }
+    }
+
+    private static String str(JsonObject o, String key) {
+        return o.has(key) && !o.get(key).isJsonNull() ? o.get(key).getAsString() : "";
+    }
+
     void shutdown() {
         shuttingDown = true;
         Session current = session;
@@ -149,10 +194,17 @@ final class BridgeLink {
 
         @Override
         public void onMessage(String message) {
+            JsonObject json;
             String type;
             try {
-                type = JsonParser.parseString(message).getAsJsonObject().get("type").getAsString();
+                json = JsonParser.parseString(message).getAsJsonObject();
+                type = json.get("type").getAsString();
             } catch (Exception e) {
+                return;
+            }
+            if ("accessban_request".equals(type) && authenticated) {
+                // Off the WebSocket thread: it touches disk and disconnects players.
+                scheduler.execute(() -> handleAccessBanRequest(json));
                 return;
             }
             if ("auth_ok".equals(type)) {
