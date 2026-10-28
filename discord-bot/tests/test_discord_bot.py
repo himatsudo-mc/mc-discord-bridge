@@ -63,3 +63,25 @@ async def test_security_alert_not_posted_without_security_channel():
     bot, channels = _make_security_bot(0)
     await bot.notify_security_alert("default", {"kind": "rapid_connections", "address": "1.2.3.4"})
     assert channels == {}
+
+
+def test_accessban_server_selection_is_never_ambiguous():
+    from types import SimpleNamespace
+
+    from bridge.config import BridgeSettings, Config, DiscordSettings, FormatSettings, LinkSettings
+    from bridge.discord_bot import DiscordBridgeBot
+
+    config = Config(
+        token="x",
+        discord=DiscordSettings(command_prefix="!"),
+        bridge=BridgeSettings(host="127.0.0.1", port=0, auth_timeout=1, max_queue_size=1, max_queue_age_seconds=1),
+        format=FormatSettings(minecraft_to_discord="{player}: {message}", player_join="{player}", player_leave="{player}"),
+        # Both servers share security channel 9.
+        links=[LinkSettings("a", "s", 1, 1, 9), LinkSettings("b", "s", 2, 2, 9)],
+    )
+    bot = DiscordBridgeBot(config)
+    at = lambda channel_id: SimpleNamespace(channel_id=channel_id)
+    assert bot._server_for_interaction(at(2), None) == "b"
+    assert bot._server_for_interaction(at(9), None) is None
+    assert bot._server_for_interaction(at(9), "a") == "a"
+    assert bot._server_for_interaction(at(1), "nope") is None

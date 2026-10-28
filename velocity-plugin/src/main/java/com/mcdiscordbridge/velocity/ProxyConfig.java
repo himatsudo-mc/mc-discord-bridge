@@ -16,6 +16,8 @@ record ProxyConfig(String host, int port, String secret, String serverId,
                    boolean securityEnabled, int rateLimitAttempts, int rateLimitWindowSeconds,
                    int alertCooldownSeconds, String namePattern, String banMessage) {
 
+    static final String DEFAULT_NAME_PATTERN = "^[.*+A-Za-z0-9_]{1,17}$";
+
     static ProxyConfig load(Path dataDirectory) throws IOException {
         Files.createDirectories(dataDirectory);
         Path file = dataDirectory.resolve("config.toml");
@@ -42,7 +44,7 @@ record ProxyConfig(String host, int port, String secret, String serverId,
                 Math.max(2, toml.getLong("security.rate-limit.attempts", 10L).intValue()),
                 Math.max(1, toml.getLong("security.rate-limit.window-seconds", 60L).intValue()),
                 Math.max(0, toml.getLong("security.alert-cooldown-seconds", 300L).intValue()),
-                toml.getString("security.name-pattern", "^[.*+A-Za-z0-9_]{1,17}$"),
+                toml.getString("security.name-pattern", DEFAULT_NAME_PATTERN),
                 toml.getString("security.ban-message", "このサーバーへのアクセスは禁止されています。"));
     }
 }

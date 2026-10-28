@@ -7,7 +7,6 @@ import org.java_websocket.handshake.ServerHandshake;
 import org.slf4j.Logger;
 
 import java.net.URI;
-import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -108,17 +107,13 @@ final class BridgeLink {
         String action = str(req, "action");
         String by = str(req, "by").isBlank() ? "Discord" : "Discord: " + str(req, "by");
         AccessBanService.Result result;
-        List<String> lines = null;
         if (service == null) {
             result = new AccessBanService.Result(false, "アク禁機能が無効です。Velocityのログを確認してください。");
         } else {
             switch (action) {
                 case "add" -> result = service.add(str(req, "target"), str(req, "reason"), by);
                 case "remove" -> result = service.remove(str(req, "target"), by);
-                case "list" -> {
-                    lines = service.list();
-                    result = new AccessBanService.Result(true, String.join("\n", lines));
-                }
+                case "list" -> result = new AccessBanService.Result(true, String.join("\n", service.list()));
                 default -> result = new AccessBanService.Result(false, "不明な操作です: " + action);
             }
         }

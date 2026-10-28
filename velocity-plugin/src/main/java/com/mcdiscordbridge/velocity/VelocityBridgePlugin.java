@@ -66,11 +66,12 @@ public final class VelocityBridgePlugin {
         try {
             bans.load();
         } catch (Exception e) {
-            // Starting with an empty list would silently let banned players in, so refuse to guess.
-            logger.error("Could not read access-bans.json; access control is disabled until it is fixed.", e);
+            // Don't start with an empty list: the next /accessban would overwrite (and lose) the file.
+            logger.error("Could not read access-bans.json; access bans and alerts are DISABLED until the file "
+                    + "is fixed and Velocity is restarted.", e);
             return;
         }
-        AccessGuard guard = new AccessGuard(config, bans, link);
+        AccessGuard guard = new AccessGuard(config, bans, link, logger);
         proxy.getEventManager().register(this, guard);
         AccessBanService service = new AccessBanService(proxy, bans, guard, config, logger);
         proxy.getCommandManager().register(

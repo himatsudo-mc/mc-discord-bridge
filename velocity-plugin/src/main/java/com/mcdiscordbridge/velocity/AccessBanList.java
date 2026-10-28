@@ -26,6 +26,8 @@ final class AccessBanList {
     record Entry(String reason, String by, String at) {}
 
     private static final Pattern IPV4 = Pattern.compile("^\\d{1,3}(\\.\\d{1,3}){3}$");
+    private static final Pattern IPV4_STRICT =
+            Pattern.compile("^((25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)\\.){3}(25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)$");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private final Path file;
@@ -44,6 +46,11 @@ final class AccessBanList {
     /** Canonical form of an IP literal, or null if it is not one. Never performs a DNS lookup. */
     static String normalizeIp(String target) {
         if (!isIp(target)) {
+            return null;
+        }
+        // getByName() falls back to a DNS lookup for anything that isn't a valid literal.
+        if (IPV4.matcher(target).matches() ? !IPV4_STRICT.matcher(target).matches()
+                : !target.matches("^[0-9A-Fa-f:.]+$")) {
             return null;
         }
         try {
@@ -95,7 +102,12 @@ final class AccessBanList {
             return false;
         }
         map.put(key, new Entry(reason, by, Instant.now().toString()));
-        save();
+        try {
+            save();
+        } catch (IOException e) {
+            map.remove(key);
+            throw e;
+        }
         return true;
     }
 
@@ -103,10 +115,16 @@ final class AccessBanList {
     synchronized boolean remove(String target) throws IOException {
         Map<String, Entry> map = isIp(target) ? ips : names;
         String key = isIp(target) ? target : target.toLowerCase(Locale.ROOT);
-        if (map.remove(key) == null) {
+        Entry removed = map.remove(key);
+        if (removed == null) {
             return false;
         }
-        save();
+        try {
+            save();
+        } catch (IOException e) {
+            map.put(key, removed);
+            throw e;
+        }
         return true;
     }
 

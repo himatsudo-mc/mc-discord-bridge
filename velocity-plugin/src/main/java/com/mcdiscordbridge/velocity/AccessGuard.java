@@ -3,8 +3,10 @@ package com.mcdiscordbridge.velocity;
 import com.velocitypowered.api.event.PostOrder;
 import com.velocitypowered.api.event.ResultedEvent;
 import com.velocitypowered.api.event.Subscribe;
+import com.velocitypowered.api.event.connection.LoginEvent;
 import com.velocitypowered.api.event.connection.PreLoginEvent;
 import net.kyori.adventure.text.Component;
+import org.slf4j.Logger;
 
 import java.net.InetSocketAddress;
 import java.util.ArrayDeque;
@@ -12,6 +14,7 @@ import java.util.Deque;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * Rejects banned IPs/names at the earliest point of login and reports suspicious
@@ -29,29 +32,30 @@ final class AccessGuard {
     private final Map<String, Long> lastAlertAt = new HashMap<>();
     private long lastSweepAt;
 
-    AccessGuard(ProxyConfig config, AccessBanList bans, BridgeLink link) {
+    AccessGuard(ProxyConfig config, AccessBanList bans, BridgeLink link, Logger logger) {
         this.config = config;
         this.bans = bans;
         this.link = link;
-        this.namePattern = Pattern.compile(config.namePattern());
+        Pattern pattern;
+        try {
+            pattern = Pattern.compile(config.namePattern());
+        } catch (PatternSyntaxException e) {
+            logger.error("security.name-pattern in config.toml is not a valid regex; using the default.", e);
+            pattern = Pattern.compile(ProxyConfig.DEFAULT_NAME_PATTERN);
+        }
+        this.namePattern = pattern;
     }
 
-    @Subscribe(order = PostOrder.FIRST)
+    // LAST so a ban wins over any other plugin that changes the result earlier in the chain.
+    @Subscribe(order = PostOrder.LAST)
     public void onPreLogin(PreLoginEvent event) {
         String ip = ipOf(event.getConnection().getRemoteAddress());
         String name = event.getUsername();
 
-        AccessBanList.Entry ban = bans.findIp(ip);
-        String what = "IP";
-        if (ban == null) {
-            ban = bans.findName(name);
-            what = "プレイヤー名";
-        }
-        if (ban != null) {
+        String banned = banDetail(ip, name);
+        if (banned != null) {
             event.setResult(PreLoginEvent.PreLoginComponentResult.denied(Component.text(config.banMessage())));
-            String detail = what + "がアク禁リストに登録されています"
-                    + (ban.reason().isBlank() ? "" : "（理由: " + ban.reason() + "）") + "。接続を拒否しました。";
-            alert("banned_attempt", ip, name, detail, 0);
+            alert("banned_attempt", ip, name, banned, 0);
             return;
         }
 
@@ -68,6 +72,36 @@ final class AccessGuard {
             alert("invalid_name", ip, name == null ? "" : name,
                     "プレイヤー名が許可パターン（" + config.namePattern() + "）に一致しません。", 0);
         }
+    }
+
+    /**
+     * Checks again with the final, authenticated name: Floodgate only adds the Bedrock prefix
+     * (e.g. ".Steve") after PreLogin, so a ban on that name can only match here.
+     */
+    @Subscribe(order = PostOrder.LAST)
+    public void onLogin(LoginEvent event) {
+        String ip = ipOf(event.getPlayer().getRemoteAddress());
+        String name = event.getPlayer().getUsername();
+        String banned = banDetail(ip, name);
+        if (banned != null) {
+            event.setResult(ResultedEvent.ComponentResult.denied(Component.text(config.banMessage())));
+            alert("banned_attempt", ip, name, banned, 0);
+        }
+    }
+
+    /** Alert text if the IP or name is banned, otherwise null. */
+    private String banDetail(String ip, String name) {
+        AccessBanList.Entry ban = bans.findIp(ip);
+        String what = "IP";
+        if (ban == null) {
+            ban = bans.findName(name);
+            what = "プレイヤー名";
+        }
+        if (ban == null) {
+            return null;
+        }
+        return what + "がアク禁リストに登録されています"
+                + (ban.reason().isBlank() ? "" : "（理由: " + ban.reason() + "）") + "。接続を拒否しました。";
     }
 
     /** Reports a ban-list change made with the command (audit log). */

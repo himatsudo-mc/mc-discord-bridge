@@ -154,6 +154,7 @@ class DiscordBridgeBot(commands.Bot):
             action="追加 / 解除 / 一覧",
             target="IPアドレスまたはプレイヤー名（一覧では不要）",
             reason="アク禁の理由（追加時のみ・任意）",
+            server="対象サーバー（複数サーバー構成で、実行チャンネルから判別できない場合に指定）",
         )
         @app_commands.choices(action=[
             app_commands.Choice(name="追加 (add)", value="add"),
@@ -165,35 +166,56 @@ class DiscordBridgeBot(commands.Bot):
             action: app_commands.Choice[str],
             target: Optional[str] = None,
             reason: Optional[str] = None,
+            server: Optional[str] = None,
         ) -> None:
-            await self._accessban_slash(interaction, action.value, target, reason)
+            await self._accessban_slash(interaction, action.value, target, reason, server)
 
         command = app_commands.Command(
             name="accessban", description="（運営用）IPアドレス/プレイヤー名をアク禁にします", callback=accessban
         )
+
+        @command.autocomplete("server")
+        async def server_autocomplete(interaction: discord.Interaction, current: str):
+            return [
+                app_commands.Choice(name=server_id, value=server_id)
+                for server_id in self._links_by_id if current.lower() in server_id.lower()
+            ][:25]
+
         command.default_permissions = discord.Permissions(manage_roles=True)
         command.guild_only = True
         self.tree.add_command(command)
 
-    def _server_for_interaction(self, interaction: discord.Interaction) -> Optional[str]:
-        """The server a command targets: the only one, else the one whose channel it was run in."""
+    def _server_for_interaction(self, interaction: discord.Interaction, requested: Optional[str]) -> Optional[str]:
+        """The server a command targets: the one named, the only one, or the one whose channel it ran in.
+
+        None if that is ambiguous, e.g. several servers share one security channel.
+        """
+        if requested:
+            return requested if requested in self._links_by_id else None
         if len(self._links_by_id) == 1:
             return next(iter(self._links_by_id))
-        for link in self._links_by_id.values():
-            if interaction.channel_id in (link.chat_channel_id, link.notify_channel_id, link.security_channel_id):
-                return link.server_id
-        return None
+        matches = [
+            link.server_id for link in self._links_by_id.values()
+            if interaction.channel_id in (link.chat_channel_id, link.notify_channel_id, link.security_channel_id)
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     async def _accessban_slash(
-        self, interaction: discord.Interaction, action: str, target: Optional[str], reason: Optional[str]
+        self,
+        interaction: discord.Interaction,
+        action: str,
+        target: Optional[str],
+        reason: Optional[str],
+        server: Optional[str] = None,
     ) -> None:
         if not self._is_staff(interaction) or self.bridge_server is None:
             await interaction.response.send_message("この操作を行う権限がありません。", ephemeral=True)
             return
-        server_id = self._server_for_interaction(interaction)
+        server_id = self._server_for_interaction(interaction, (server or "").strip())
         if server_id is None:
             await interaction.response.send_message(
-                "対象のサーバーを判別できません。そのサーバーに紐づくチャンネルで実行してください。", ephemeral=True
+                "対象のサーバーを判別できません。server で対象サーバーを指定してください"
+                f"（{', '.join(self._links_by_id)}）。", ephemeral=True
             )
             return
         target = (target or "").strip()
@@ -203,14 +225,15 @@ class DiscordBridgeBot(commands.Bot):
             )
             return
         await interaction.response.defer(ephemeral=True)
+        # The unique username (not the editable display name) goes into the ban list and audit log.
         ok, message = await self.bridge_server.request_accessban(
-            server_id, action, target, (reason or "").strip(), interaction.user.display_name
+            server_id, action, target, (reason or "").strip(), f"{interaction.user.name} ({interaction.user.id})"
         )
         icon = "\N{WHITE HEAVY CHECK MARK}" if ok else "\N{CROSS MARK}"
         text = f"{icon} {discord.utils.escape_markdown(discord.utils.escape_mentions(message))}"
-        await interaction.followup.send(
-            text[:1900], ephemeral=True, allowed_mentions=discord.AllowedMentions.none()
-        )
+        if len(text) > 1900:
+            text = text[:1900].rsplit("\n", 1)[0] + "\n…（長いため省略。全件は Velocity の /accessban list で確認してください）"
+        await interaction.followup.send(text, ephemeral=True, allowed_mentions=discord.AllowedMentions.none())
 
     @staticmethod
     def _is_staff(interaction: discord.Interaction) -> bool:
